@@ -1,0 +1,32 @@
+{
+  "name": "cerdasnet-vps-control",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Production-ready multi-token UpCloud VPS control panel",
+  "scripts": {
+    "dev": "concurrently -n backend,frontend -c blue,green \"npm --prefix backend run dev\" \"npm --prefix frontend run dev\"",
+    "build": "npm --prefix backend run build && npm --prefix frontend run build",
+    "lint": "eslint .",
+    "typecheck": "npm --prefix backend run typecheck && npm --prefix frontend run typecheck",
+    "test": "npm --prefix backend run test && npm --prefix frontend run test",
+    "test:coverage": "npm --prefix backend run test:coverage && npm --prefix frontend run test:coverage",
+    "test:e2e": "npm --prefix frontend run test:e2e",
+    "bootstrap:admin": "npm --prefix backend run bootstrap:admin",
+    "backup": "./scripts/backup.sh",
+    "restore": "./scripts/restore.sh"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.38.0",
+    "@typescript-eslint/eslint-plugin": "^8.46.2",
+    "@typescript-eslint/parser": "^8.46.2",
+    "concurrently": "^9.2.1",
+    "eslint": "^9.38.0",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "globals": "^16.4.0",
+    "typescript-eslint": "^8.46.2"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}
