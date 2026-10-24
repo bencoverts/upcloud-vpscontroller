@@ -1,21 +1,23 @@
 import { useState } from 'react';
-import { Play, RefreshCw, RotateCw, Square } from 'lucide-react';
+import { Octagon, Play, RefreshCw, RotateCw, Square } from 'lucide-react';
 import { api } from '../api';
 import type { Server, SyncJob } from '../types';
 import { useJobs } from '../context/JobsContext';
 import { useToast } from '../context/ToastContext';
-import { Button, Modal } from './ui';
+import { Button, Field, inputClass, Modal } from './ui';
 
-type Action = 'start' | 'stop' | 'restart';
+type Action = 'start' | 'stop' | 'hard_stop' | 'restart';
 const actionConfig = {
   start: { label: 'Start', title: 'Start server?', icon: Play, description: 'Server akan dinyalakan melalui endpoint resmi UpCloud. Panel menunggu status started terverifikasi.' },
   stop: { label: 'Stop', title: 'Stop server?', icon: Square, description: 'Soft stop dengan timeout 60 detik akan dikirim. Layanan pada VPS menjadi tidak tersedia. Jika UpCloud belum mencapai stopped, panel menampilkan verification timeout—bukan sukses palsu.' },
+  hard_stop: { label: 'Hard stop', title: 'Hard stop server?', icon: Octagon, description: 'Hard stop setara memutus daya dan dapat menyebabkan data yang belum ditulis ke disk rusak. Gunakan hanya jika soft stop tidak memungkinkan. Status stopped akan diverifikasi.' },
   restart: { label: 'Restart', title: 'Restart server?', icon: RotateCw, description: 'Server akan dihentikan sementara lalu dinyalakan kembali menggunakan soft restart. Terjadi downtime selama proses. Status started diverifikasi dua kali setelah operasi.' },
 };
 
 export default function ServerActions({ server, compact = false, showSync = false }: { server: Server; compact?: boolean; showSync?: boolean }) {
   const [action, setAction] = useState<Action | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [confirmationTitle, setConfirmationTitle] = useState('');
   const { trackJob, isServerBusy } = useJobs();
   const { push } = useToast();
   const busy = isServerBusy(server.uuid) || Boolean(server.activeJob) || submitting;
@@ -23,10 +25,10 @@ export default function ServerActions({ server, compact = false, showSync = fals
     if (!action) return;
     setSubmitting(true);
     try {
-      const job = await api.post<SyncJob>(`/api/servers/${server.uuid}/actions`, { action });
+      const job = await api.post<SyncJob>(`/api/servers/${server.uuid}/actions`, { action, ...(action === 'hard_stop' ? { confirmationTitle } : {}) });
       trackJob(job, `${actionConfig[action].label} ${server.title}`);
       push('info', 'Operasi dikirim ke UpCloud', 'Menunggu hasil dan verifikasi status akhir. Jangan mengulangi tindakan selama job aktif.');
-      setAction(null);
+      setAction(null); setConfirmationTitle('');
     } catch (error) { push('error', 'Operasi tidak dapat dimulai', error instanceof Error ? error.message : undefined); }
     finally { setSubmitting(false); }
   };
@@ -43,13 +45,15 @@ export default function ServerActions({ server, compact = false, showSync = fals
     const config = actionConfig[key];
     const Icon = config.icon;
     const enabled = key === 'start' ? server.state === 'stopped' : server.state === 'started';
-    return <Button key={key} variant={key === 'stop' && !compact ? 'danger' : compact ? 'ghost' : 'outline'} size={compact ? 'icon' : 'sm'} disabled={!enabled || busy} onClick={() => setAction(key)} title={`${config.label} ${server.title}`} aria-label={`${config.label} ${server.title}`}><Icon className="h-4 w-4" />{!compact && config.label}</Button>;
+    if (compact && key === 'hard_stop') return null;
+    return <Button key={key} variant={['stop', 'hard_stop'].includes(key) && !compact ? 'danger' : compact ? 'ghost' : 'outline'} size={compact ? 'icon' : 'sm'} disabled={!enabled || busy} onClick={() => { setConfirmationTitle(''); setAction(key); }} title={`${config.label} ${server.title}`} aria-label={`${config.label} ${server.title}`}><Icon className="h-4 w-4" />{!compact && config.label}</Button>;
   });
   return <>
     <div className="flex items-center gap-1.5">{showSync && <Button variant="outline" size={compact ? 'icon' : 'sm'} loading={submitting && !action} disabled={busy} onClick={synchronize}><RefreshCw className="h-4 w-4" />{!compact && 'Sinkronisasi'}</Button>}{buttons}</div>
-    {action && <Modal title={actionConfig[action].title} description="Operasi berdampak pada ketersediaan server." onClose={() => !submitting && setAction(null)} footer={<><Button variant="outline" disabled={submitting} onClick={() => setAction(null)}>Batal</Button><Button variant={action === 'stop' ? 'danger' : 'primary'} loading={submitting} onClick={execute}>Ya, {actionConfig[action].label.toLowerCase()} server</Button></>}>
+    {action && <Modal title={actionConfig[action].title} description="Operasi berdampak pada ketersediaan server." onClose={() => !submitting && setAction(null)} footer={<><Button variant="outline" disabled={submitting} onClick={() => setAction(null)}>Batal</Button><Button variant={['stop', 'hard_stop'].includes(action) ? 'danger' : 'primary'} loading={submitting} disabled={action === 'hard_stop' && confirmationTitle !== server.title} onClick={execute}>Ya, {actionConfig[action].label.toLowerCase()} server</Button></>}>
       <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-950"><p className="font-semibold text-slate-900 dark:text-white">{server.title}</p><code className="mt-1 block break-all text-xs text-slate-500 dark:text-slate-400">{server.uuid}</code></div>
       <p className="mt-4 text-sm leading-6 text-slate-600 dark:text-slate-300">{actionConfig[action].description}</p>
+      {action === 'hard_stop' && <div className="mt-4"><Field label={`Ketik judul “${server.title}” untuk konfirmasi`} required><input className={inputClass} value={confirmationTitle} onChange={(event) => setConfirmationTitle(event.target.value)} autoFocus /></Field></div>}
       <p className="mt-3 text-xs leading-5 text-amber-600 dark:text-amber-400">Pastikan Anda memiliki otorisasi untuk mengelola VPS ini. Operasi hanya dikirim sekali dan tidak di-retry otomatis.</p>
     </Modal>}
   </>;

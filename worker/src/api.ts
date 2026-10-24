@@ -7,11 +7,14 @@ import type { AuthContext } from '../../backend/src/auth/service.js';
 import { bootstrapAdmin } from '../../backend/src/auth/service.js';
 import { requireAdmin, requireServerAccess } from '../../backend/src/auth/access.js';
 import { AppError } from '../../backend/src/lib/errors.js';
-import { hashOpaqueToken, randomId, safeHexEqual } from '../../backend/src/lib/crypto.js';
+import { base64ToBytes, hashOpaqueToken, randomId, safeHexEqual } from '../../backend/src/lib/crypto.js';
 import { writeAudit } from '../../backend/src/lib/audit.js';
 import { dashboardSummary, getServer, listServers, persistServer, upsertMembership } from '../../backend/src/servers/catalog.js';
 import type { MetricRange } from '../../backend/src/metrics/service.js';
 import type { WorkerEnv } from './runtime.js';
+import { openApiDocument } from '../../backend/src/docs/document.js';
+import { WorkerSmtpService } from './smtp.js';
+import { apiScopes } from '../../backend/src/api-keys/service.js';
 
 type Variables = { auth: AuthContext };
 type C = Context<{ Variables: Variables }>;
@@ -36,6 +39,14 @@ async function audit(c: C, services: ApplicationServices, input: Parameters<type
 }
 async function body<T>(c: C, schema: z.ZodType<T>): Promise<T> { return schema.parse(await c.req.json()); }
 function admin(c: C) { requireAdmin(c.get('auth').user); }
+function sessionOnly(c: C) { if (c.get('auth').apiKey) throw new AppError(403, 'SESSION_REQUIRED', 'Kelola API key melalui sesi dashboard.'); }
+function apiKeyAllowed(scopes: string[], method: string, path: string): boolean {
+  if (scopes.includes('admin')) return true;
+  const required = ['GET', 'HEAD', 'OPTIONS'].includes(method) ? 'read'
+    : path.startsWith('/api/deployments') ? 'servers:deploy'
+      : path.startsWith('/api/servers') || path.startsWith('/api/sync/jobs') ? 'servers:write' : 'admin';
+  return scopes.includes(required);
+}
 function cookieOptions(expires?: Date) { return { httpOnly: true, secure: true, sameSite: 'Lax' as const, path: '/', ...(expires ? { expires } : {}) }; }
 
 export function createWorkerApi(services: ApplicationServices, env: WorkerEnv, options: {
@@ -44,10 +55,20 @@ export function createWorkerApi(services: ApplicationServices, env: WorkerEnv, o
 }) {
   const { db, auth, tokens, sync, settings, metrics, agents, users, config } = services;
   const identityUpdates = new Set<string>();
+  const smtp = new WorkerSmtpService(config);
   const app = new Hono<{ Variables: Variables }>();
 
   app.use('*', async (c, next) => {
     if (c.req.method !== 'GET' && c.req.path.startsWith('/api/')) {
+      const length = Number(c.req.header('content-length') ?? 0);
+      if (length > 1024 * 1024) {
+        await c.req.raw.body?.cancel().catch(() => undefined);
+        throw new AppError(413, 'BAD_REQUEST', 'Ukuran request melebihi batas.');
+      }
+      // Hono caches this body for route parsers. Reading it before an auth/CSRF
+      // rejection also prevents workerd from draining a stream after responding.
+      const rawBody = await c.req.text();
+      if (new TextEncoder().encode(rawBody).byteLength > 1024 * 1024) throw new AppError(413, 'BAD_REQUEST', 'Ukuran request melebihi batas.');
       if (c.req.header('sec-fetch-site') === 'cross-site') throw new AppError(403, 'CSRF_INVALID', 'Request lintas situs ditolak.');
       const origin = c.req.header('origin');
       if (origin) {
@@ -55,13 +76,8 @@ export function createWorkerApi(services: ApplicationServices, env: WorkerEnv, o
         const requestOrigin = new URL(c.req.url).origin;
         if (actual !== config.appOrigin && actual !== requestOrigin) throw new AppError(403, 'CSRF_INVALID', 'Origin request tidak diizinkan.');
       }
-      const length = Number(c.req.header('content-length') ?? 0);
-      if (length > 32 * 1024) throw new AppError(413, 'BAD_REQUEST', 'Ukuran request melebihi batas.');
     }
-    try { await next(); } catch (error) {
-      if (c.req.method !== 'GET' && c.req.method !== 'HEAD') await c.req.raw.body?.cancel().catch(() => undefined);
-      throw error;
-    }
+    await next();
     c.header('X-Content-Type-Options', 'nosniff');
     c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
   });
@@ -72,12 +88,40 @@ export function createWorkerApi(services: ApplicationServices, env: WorkerEnv, o
     return c.json({ status: 'ready', database: 'ok', storage: 'r2_json' });
   });
 
+  app.get('/api/branding', async (c) => data(c, await services.branding.get()));
+  app.get('/api/branding/assets/:kind', async (c) => {
+    const kind = z.enum(['logo', 'favicon']).parse(c.req.param('kind'));
+    const asset = await services.branding.asset(kind);
+    if (!asset) throw new AppError(404, 'NOT_FOUND', 'Asset branding belum dikonfigurasi.');
+    c.header('Content-Type', asset.mime); c.header('Cache-Control', 'public, max-age=300'); c.header('X-Content-Type-Options', 'nosniff');
+    return c.body(base64ToBytes(asset.data).buffer as ArrayBuffer);
+  });
+  app.get('/api/auth/google/status', (c) => data(c, services.google.status()));
+  app.get('/api/auth/google', async (c) => {
+    if (!await options.allowLogin(clientIp(c) ?? 'unknown')) throw new AppError(429, 'RATE_LIMITED', 'Terlalu banyak percobaan login.');
+    const result = await services.google.begin();
+    setCookie(c, 'cerdasnet_google_oauth', result.stateId, { ...cookieOptions(new Date(Date.now() + 600000)), secure: config.cookieSecure });
+    return c.redirect(result.url);
+  });
+  app.get('/api/auth/google/callback', async (c) => {
+    deleteCookie(c, 'cerdasnet_google_oauth', { path: '/' });
+    if (!await options.allowLogin(clientIp(c) ?? 'unknown')) return c.redirect('/login?oauth=failed');
+    try {
+      const query = new URL(c.req.url).searchParams;
+      const input = z.object({ state: z.string().min(10).max(200), code: z.string().min(1).max(4096) }).parse({ state: query.get('state'), code: query.get('code') });
+      const result = await services.google.callback({ stateId: getCookie(c, 'cerdasnet_google_oauth') ?? '', state: input.state, code: input.code, ipAddress: clientIp(c) ?? undefined, userAgent: c.req.header('user-agent') });
+      setCookie(c, cookieName(services), result.sessionToken, { ...cookieOptions(result.expiresAt), secure: config.cookieSecure });
+      await audit(c, services, { action: 'auth.google_login', resourceType: 'user', resourceId: result.auth.user.id, outcome: 'success', userId: result.auth.user.id });
+      return c.redirect('/');
+    } catch { return c.redirect('/login?oauth=failed'); }
+  });
+
   app.post('/api/auth/bootstrap', async (c) => {
     if (!env.BOOTSTRAP_SECRET || !safeHexEqual(hashOpaqueToken(c.req.header('x-bootstrap-key') ?? ''), hashOpaqueToken(env.BOOTSTRAP_SECRET))) {
       throw new AppError(403, 'FORBIDDEN', 'Bootstrap secret tidak valid.');
     }
-    const input = await body(c, z.object({ username: z.string().trim().min(3).max(64), password }));
-    const user = await bootstrapAdmin(db, input.username, input.password);
+    const input = await body(c, z.object({ username: z.string().trim().min(3).max(64), password, email: z.string().trim().email().max(320).nullable().optional() }));
+    const user = await bootstrapAdmin(db, input.username, input.password, input.email ?? null);
     return data(c, { created: true, username: user.username }, 201);
   });
 
@@ -103,6 +147,9 @@ export function createWorkerApi(services: ApplicationServices, env: WorkerEnv, o
       serverUuid: uuid, filesystemUsedBytes: byteCount, filesystemTotalBytes: byteCount,
       filesystemCount: z.number().int().min(1).max(1024), memoryUsedBytes: nullableBytes, memoryTotalBytes: nullableBytes,
       swapUsedBytes: nullableBytes, swapTotalBytes: nullableBytes, osUptimeSeconds: z.number().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable(),
+      load1: z.number().nonnegative().max(1000000).nullable().optional(), load5: z.number().nonnegative().max(1000000).nullable().optional(), load15: z.number().nonnegative().max(1000000).nullable().optional(),
+      processCount: z.number().int().min(1).max(10000000).nullable().optional(), filesystems: z.array(z.object({ source: z.string().max(255), mount: z.string().max(1024), totalBytes: byteCount, usedBytes: byteCount })).max(64).optional(),
+      osName: z.string().max(200).nullable().optional(), agentVersion: z.string().max(20).optional(),
     }).superRefine((value, context) => {
       if (value.filesystemUsedBytes > value.filesystemTotalBytes) context.addIssue({ code: 'custom', message: 'Filesystem used melebihi total.' });
     }));
@@ -111,21 +158,32 @@ export function createWorkerApi(services: ApplicationServices, env: WorkerEnv, o
   });
 
   app.use('/api/*', async (c, next) => {
+    const authorization = c.req.header('authorization');
+    const bearer = authorization?.startsWith('Bearer ') ? authorization.slice(7) : null;
     const token = getCookie(c, cookieName(services));
-    if (!token || token.length > 200) throw new AppError(401, 'UNAUTHENTICATED', 'Sesi login diperlukan.');
-    const context = await auth.authenticate(token);
-    if (!context) throw new AppError(401, 'UNAUTHENTICATED', 'Sesi tidak valid atau telah kedaluwarsa.');
+    if ((!token || token.length > 200) && !bearer) throw new AppError(401, 'UNAUTHENTICATED', 'Sesi login atau API key diperlukan.');
+    const context = bearer ? await services.apiKeys.authenticate(bearer) : await auth.authenticate(token!);
+    if (!context) throw new AppError(401, 'UNAUTHENTICATED', 'Sesi atau API key tidak valid/kedaluwarsa.');
+    if (context.apiKey && !apiKeyAllowed(context.apiKey.scopes, c.req.method, c.req.path)) throw new AppError(403, 'SCOPE_REQUIRED', 'API key tidak memiliki scope untuk operasi ini.');
     c.set('auth', context);
-    if (!['GET', 'HEAD', 'OPTIONS'].includes(c.req.method)) {
+    if (!context.apiKey && !['GET', 'HEAD', 'OPTIONS'].includes(c.req.method)) {
       const supplied = c.req.header('x-csrf-token');
       if (!supplied || !safeHexEqual(hashOpaqueToken(supplied), hashOpaqueToken(context.csrfToken))) throw new AppError(403, 'CSRF_INVALID', 'Token CSRF tidak valid.');
     }
-    if (/^\/api\/(tokens|users|backup|activity)(?:\/|$)/.test(c.req.path)) admin(c);
+    if (/^\/api\/(tokens|users|backup|activity|proxmox|integrations)(?:\/|$)/.test(c.req.path)) admin(c);
     await next();
   });
 
   app.get('/api/events', (c) => options.websocket(c));
   app.get('/api/auth/me', (c) => data(c, { user: c.get('auth').user, csrfToken: c.get('auth').csrfToken, expiresAt: c.get('auth').expiresAt }));
+  app.get('/api/auth/email', async (c) => data(c, { email: await db.read((state) => state.users.find((row) => row.id === c.get('auth').user.id)?.email ?? null) }));
+  app.patch('/api/auth/email', async (c) => {
+    const input = await body(c, z.object({ email: z.string().trim().email().max(320).nullable() }));
+    const result = await auth.setEmail(c.get('auth').user.id, input.email);
+    await audit(c, services, { action: 'auth.email_update', resourceType: 'user', resourceId: c.get('auth').user.id, outcome: 'success' });
+    return data(c, result);
+  });
+
   app.post('/api/auth/logout', async (c) => {
     await auth.logout(c.get('auth').sessionId);
     await audit(c, services, { action: 'auth.logout', resourceType: 'user', resourceId: c.get('auth').user.id, outcome: 'success' });
@@ -254,7 +312,11 @@ export function createWorkerApi(services: ApplicationServices, env: WorkerEnv, o
   app.post('/api/servers/:id/actions', async (c) => {
     const id = uuid.parse(c.req.param('id'));
     await requireServerAccess(db, c.get('auth').user, id);
-    const input = await body(c, z.object({ action: z.enum(['start', 'stop', 'restart']) }));
+    const input = await body(c, z.object({ action: z.enum(['start', 'stop', 'hard_stop', 'restart']), confirmationTitle: z.string().max(255).optional() }));
+    if (input.action === 'hard_stop') {
+      const server = await getServer(db, id, c.get('auth').user);
+      if (!server || server.title !== input.confirmationTitle) throw new AppError(400, 'CONFIRMATION_INVALID', 'Hard stop memerlukan judul VPS yang persis.');
+    }
     const job = await sync.enqueueControl(id, input.action, c.get('auth').user.id);
     await audit(c, services, { action: `server.${input.action}`, resourceType: 'server', resourceId: id, outcome: 'accepted', details: { jobId: job.id } });
     return data(c, job, 202);
@@ -287,7 +349,7 @@ export function createWorkerApi(services: ApplicationServices, env: WorkerEnv, o
   });
   app.get('/api/sync/jobs/:id', async (c) => {
     const job = await sync.getJob(uuid.parse(c.req.param('id')));
-    if (c.get('auth').user.role !== 'admin') {
+    if (c.get('auth').user.role !== 'admin' && job.requestedBy !== c.get('auth').user.id) {
       if (!job.serverUuid) admin(c); else await requireServerAccess(db, c.get('auth').user, job.serverUuid);
     }
     return data(c, job);
@@ -343,14 +405,14 @@ export function createWorkerApi(services: ApplicationServices, env: WorkerEnv, o
     return state.servers.filter((server) => active.has(server.uuid)).map((server) => ({ uuid: server.uuid, title: server.title, hostname: server.hostname, state: server.state, zone: server.zone }));
   })));
   app.post('/api/users', async (c) => {
-    const input = await body(c, z.object({ username: z.string().trim().min(3).max(64).regex(/^[a-zA-Z0-9._-]+$/), password }));
+    const input = await body(c, z.object({ username: z.string().trim().min(3).max(64).regex(/^[a-zA-Z0-9._-]+$/), password, email: z.string().trim().email().max(320).nullable().optional() }));
     const user = await users.createClient(input);
     await audit(c, services, { action: 'client.create', resourceType: 'user', resourceId: user.id, outcome: 'success', details: { username: user.username } });
     return data(c, user, 201);
   });
   app.patch('/api/users/:id', async (c) => {
     const id = uuid.parse(c.req.param('id'));
-    const input = await body(c, z.object({ password: password.optional(), disabled: z.boolean().optional() }));
+    const input = await body(c, z.object({ password: password.optional(), disabled: z.boolean().optional(), email: z.string().trim().email().max(320).nullable().optional() }));
     const user = await users.updateClient(id, input);
     await audit(c, services, { action: 'client.update', resourceType: 'user', resourceId: id, outcome: 'success', details: { passwordChanged: Boolean(input.password), disabled: input.disabled } });
     return data(c, user);
@@ -364,13 +426,112 @@ export function createWorkerApi(services: ApplicationServices, env: WorkerEnv, o
   });
 
   app.get('/api/backup', async (c) => {
-    const snapshot = await db.read((state) => ({ ...state, sessions: [] }));
+    const snapshot = await db.read((state) => ({ ...state, sessions: [], oauth_states: [] }));
     await audit(c, services, { action: 'backup.download', resourceType: 'system', outcome: 'success' });
     const stamp = new Date().toISOString().replaceAll(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
     c.header('Content-Type', 'application/json; charset=utf-8');
     c.header('Content-Disposition', `attachment; filename="cerdasnet-${stamp}.json"`);
     c.header('Cache-Control', 'no-store');
     return c.body(`${JSON.stringify(snapshot, null, 2)}\n`);
+  });
+
+  app.get('/api/targets', async (c) => data(c, { items: await services.lifecycle.deploymentTargets() }));
+  app.get('/api/catalog/:tokenId', async (c) => data(c, await services.lifecycle.catalog(uuid.parse(c.req.param('tokenId')), new URL(c.req.url).searchParams.get('refresh') === 'true')));
+  app.post('/api/deployments', async (c) => {
+    const job = await services.lifecycle.deploy(await c.req.json(), c.get('auth').user);
+    await audit(c, services, { action: 'server.deploy', resourceType: 'server', outcome: 'accepted', details: { jobId: job.id } });
+    return data(c, job, 202);
+  });
+  app.get('/api/servers/:id/catalog', async (c) => data(c, await services.lifecycle.rebuildCatalog(uuid.parse(c.req.param('id')), c.get('auth').user)));
+  app.post('/api/servers/:id/rebuild', async (c) => {
+    const id = uuid.parse(c.req.param('id'));
+    const job = await services.lifecycle.rebuild(id, await c.req.json(), c.get('auth').user);
+    await audit(c, services, { action: 'server.rebuild', resourceType: 'server', resourceId: id, outcome: 'accepted', details: { jobId: job.id } });
+    return data(c, job, 202);
+  });
+  app.patch('/api/servers/:id/configuration', async (c) => {
+    const id = uuid.parse(c.req.param('id'));
+    const result = await services.lifecycle.updateConfiguration(id, await c.req.json(), c.get('auth').user);
+    await audit(c, services, { action: 'server.configuration_update', resourceType: 'server', resourceId: id, outcome: 'success' });
+    return data(c, result);
+  });
+  app.delete('/api/servers/:id', async (c) => {
+    admin(c); const id = uuid.parse(c.req.param('id'));
+    const result = await services.lifecycle.delete(id, await c.req.json(), c.get('auth').user);
+    await audit(c, services, { action: 'server.delete', resourceType: 'server', resourceId: id, outcome: 'success', details: { storagesDeleted: result.storagesDeleted } });
+    return data(c, result);
+  });
+
+  app.get('/api/api-keys', async (c) => { sessionOnly(c); return data(c, { items: await services.apiKeys.list(c.get('auth').user), availableScopes: apiScopes }); });
+  app.post('/api/api-keys', async (c) => {
+    sessionOnly(c);
+    const input = await body(c, z.object({ name: z.string().trim().min(3).max(80), scopes: z.array(z.enum(apiScopes)).min(1).max(4).refine((items) => new Set(items).size === items.length), expiresAt: z.string().datetime({ offset: true }).nullable().default(null) }));
+    const result = await services.apiKeys.create(c.get('auth').user, input);
+    await audit(c, services, { action: 'panel_api_key.create', resourceType: 'api_key', resourceId: result.record!.id, outcome: 'success', details: { name: input.name, scopes: input.scopes } });
+    return data(c, result, 201);
+  });
+  app.delete('/api/api-keys/:id', async (c) => {
+    sessionOnly(c); const id = uuid.parse(c.req.param('id'));
+    const result = await services.apiKeys.revoke(c.get('auth').user, id);
+    await audit(c, services, { action: 'panel_api_key.revoke', resourceType: 'api_key', resourceId: id, outcome: 'success' });
+    return data(c, result);
+  });
+
+  app.patch('/api/branding', async (c) => {
+    admin(c);
+    const input = await body(c, z.object({ siteName: z.string().trim().min(1).max(80), siteTagline: z.string().trim().min(1).max(120), accent: z.enum(['teal', 'blue', 'violet', 'rose', 'amber']), defaultTheme: z.enum(['system', 'light', 'dark']) }));
+    const result = await services.branding.update(input);
+    await audit(c, services, { action: 'branding.update', resourceType: 'system', outcome: 'success' });
+    return data(c, result);
+  });
+  app.put('/api/branding/assets/:kind', async (c) => {
+    admin(c); const kind = z.enum(['logo', 'favicon']).parse(c.req.param('kind'));
+    const input = await body(c, z.object({ dataUrl: z.string().max(750000) }));
+    const result = await services.branding.setAsset(kind, input.dataUrl);
+    await audit(c, services, { action: 'branding.asset_upload', resourceType: 'system', outcome: 'success', details: { kind } });
+    return data(c, result);
+  });
+  app.delete('/api/branding/assets/:kind', async (c) => { admin(c); return data(c, await services.branding.removeAsset(z.enum(['logo', 'favicon']).parse(c.req.param('kind')))); });
+
+  app.get('/api/docs', (c) => data(c, {
+    apiBase: '/api', authentication: 'Authorization: Bearer cnp_…', websocket: '/api/events', scopes: apiScopes, openApiUrl: '/api/docs/openapi.json',
+    guides: [
+      { id: 'billing', title: 'Deployment billing', text: 'Buat API key read + servers:deploy, baca katalog, kirim deployment dengan confirmationTitle, lalu poll job hingga terminal. HTTP 202 bukan berarti VPS siap.' },
+      { id: 'rebuild', title: 'Ganti/reset OS', text: 'VPS wajib stopped atau shutdownFirst=true. Disk lama dipertahankan kecuali deleteDetachedDisk=true.' },
+      { id: 'metrics', title: 'Monitoring', text: 'Metrik berasal dari UpCloud, guest agent, atau Proxmox. Null berarti tidak tersedia; fieldSampledAt menunjukkan umur nilai.' },
+    ],
+  }));
+  app.get('/api/docs/openapi.json', (c) => c.json(openApiDocument(config.appOrigin)));
+
+  app.get('/api/integrations/smtp', (c) => data(c, smtp.status()));
+  app.post('/api/integrations/smtp/test', async (c) => {
+    const input = await body(c, z.object({ recipient: z.string().email().max(320) }));
+    const branding = await services.branding.get();
+    const result = await smtp.sendTest(input.recipient, branding.siteName);
+    await audit(c, services, { action: 'smtp.test', resourceType: 'system', outcome: 'success', details: { recipient: result.recipient } });
+    return data(c, result);
+  });
+
+  app.get('/api/proxmox/connections', async (c) => data(c, await services.proxmox.listConnections()));
+  app.post('/api/proxmox/connections', async (c) => {
+    const result = await services.proxmox.create(await c.req.json());
+    await audit(c, services, { action: 'proxmox.connection_create', resourceType: 'proxmox', resourceId: result!.id, outcome: 'success' });
+    return data(c, result, 201);
+  });
+  app.post('/api/proxmox/connections/:id/sync', async (c) => data(c, await services.proxmox.sync(uuid.parse(c.req.param('id')))));
+  app.delete('/api/proxmox/connections/:id', async (c) => {
+    const id = uuid.parse(c.req.param('id')); const input = await body(c, z.object({ confirmationName: z.string().min(1).max(80) }));
+    const result = await services.proxmox.remove(id, input.confirmationName);
+    await audit(c, services, { action: 'proxmox.connection_remove', resourceType: 'proxmox', resourceId: id, outcome: 'success' });
+    return data(c, result);
+  });
+  app.get('/api/proxmox/resources', async (c) => data(c, await services.proxmox.resources()));
+  app.post('/api/proxmox/resources/:id/actions', async (c) => {
+    const id = uuid.parse(c.req.param('id'));
+    const input = await body(c, z.object({ action: z.enum(['start', 'shutdown', 'stop', 'reboot']), confirmationName: z.string().max(255).optional() }));
+    const result = await services.proxmox.power(id, input.action, input.confirmationName);
+    await audit(c, services, { action: `proxmox.${input.action}`, resourceType: 'proxmox_resource', resourceId: id, outcome: 'success', details: result });
+    return data(c, result);
   });
 
   app.notFound((c) => c.json({ error: { code: 'NOT_FOUND', message: 'Endpoint tidak ditemukan.' } }, 404));

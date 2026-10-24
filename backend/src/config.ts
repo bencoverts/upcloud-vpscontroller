@@ -17,6 +17,8 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: integer(3000, 1, 65535),
   APP_ORIGIN: z.string().url().default('http://localhost:5173'),
+  SITE_NAME: z.string().trim().min(1).max(80).default('CerdasNet'),
+  SITE_TAGLINE: z.string().trim().min(1).max(120).default('VPS Control'),
   FRONTEND_DIST: z.string().optional(),
   DATA_FILE: z.string().min(1).default(path.join(process.cwd(), 'data', 'database.json')),
   TOKEN_ENCRYPTION_KEY: z.string().min(32),
@@ -36,12 +38,22 @@ const envSchema = z.object({
   AUTO_SYNC_ON_BOOT: boolean(true),
   ADMIN_USERNAME: z.string().min(3).max(64).optional(),
   ADMIN_PASSWORD: z.string().min(12).max(256).optional(),
+  GOOGLE_CLIENT_ID: z.string().max(300).optional(),
+  GOOGLE_CLIENT_SECRET: z.string().max(300).optional(),
+  SMTP_HOST: z.string().max(255).optional(),
+  SMTP_PORT: integer(587, 1, 65535),
+  SMTP_SECURE: boolean(false),
+  SMTP_USERNAME: z.string().max(320).optional(),
+  SMTP_PASSWORD: z.string().max(512).optional(),
+  SMTP_FROM: z.string().max(320).optional(),
 });
 
 export type AppConfig = {
   nodeEnv: 'development' | 'test' | 'production';
   port: number;
   appOrigin: string;
+  siteName: string;
+  siteTagline: string;
   frontendDist?: string;
   databasePath: string;
   tokenEncryptionKey: string;
@@ -61,6 +73,14 @@ export type AppConfig = {
   autoSyncOnBoot: boolean;
   adminUsername?: string;
   adminPassword?: string;
+  googleClientId?: string;
+  googleClientSecret?: string;
+  smtpHost?: string;
+  smtpPort: number;
+  smtpSecure: boolean;
+  smtpUsername?: string;
+  smtpPassword?: string;
+  smtpFrom?: string;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -73,6 +93,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     nodeEnv: parsed.NODE_ENV,
     port: parsed.PORT,
     appOrigin: parsed.APP_ORIGIN.replace(/\/$/, ''),
+    siteName: parsed.SITE_NAME,
+    siteTagline: parsed.SITE_TAGLINE,
     frontendDist: parsed.FRONTEND_DIST,
     databasePath: path.resolve(parsed.DATA_FILE),
     tokenEncryptionKey: parsed.TOKEN_ENCRYPTION_KEY,
@@ -92,5 +114,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     autoSyncOnBoot: parsed.AUTO_SYNC_ON_BOOT,
     adminUsername: parsed.ADMIN_USERNAME,
     adminPassword: parsed.ADMIN_PASSWORD,
+    googleClientId: parsed.GOOGLE_CLIENT_ID,
+    googleClientSecret: parsed.GOOGLE_CLIENT_SECRET,
+    smtpHost: parsed.SMTP_HOST,
+    smtpPort: parsed.SMTP_PORT,
+    smtpSecure: parsed.SMTP_SECURE,
+    smtpUsername: parsed.SMTP_USERNAME,
+    smtpPassword: parsed.SMTP_PASSWORD,
+    smtpFrom: parsed.SMTP_FROM,
   };
 }

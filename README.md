@@ -10,9 +10,13 @@ Panel kontrol VPS UpCloud full-stack berbahasa Indonesia untuk banyak API token,
 - Seluruh VPS hasil discovery tetap disinkronkan. Deduplikasi global memakai UUID UpCloud; relasi token/grup tetap dipertahankan.
 - Detail VPS: Overview, Performance, Storage, Network, Configuration, dan Activity.
 - Statistik CPU/disk/network dari endpoint resmi UpCloud. RAM, swap, filesystem usage, dan OS uptime dapat berasal dari guest agent Linux opsional. Riwayat hanya berisi sampel nyata—tanpa backfill, interpolasi, atau angka simulasi.
-- Start, soft stop, dan restart dengan dialog konsekuensi, pencegahan klik ganda, active-job uniqueness, dan verifikasi state dari UpCloud.
+- Start, soft/hard stop, restart, modifikasi konfigurasi, rebuild/ganti OS, dan delete dengan konfirmasi yang disengaja, pencegahan klik ganda, active-job uniqueness, serta verifikasi hasil upstream. Rebuild dan delete mewajibkan VPS stopped; panel tidak pernah mengklaim sukses dari respons asynchronous saja.
 - Ubah title/hostname melalui operasi resmi UpCloud; respons baru dianggap berhasil setelah upstream menerima perubahan. Rename mempunyai validasi server-side, audit, dan proteksi submit ganda.
-- Download backup JSON langsung oleh admin dari halaman Settings, tanpa live session dan tanpa encryption key.
+- Deploy VPS dari katalog zone/plan/template UpCloud yang diambil dinamis, dengan credential provider hanya di backend dan assignment RBAC untuk client.
+- Integrasi Proxmox VE dengan API token terenkripsi, discovery QEMU/LXC, metrik hypervisor yang tersedia, dan power action berbasis UPID task yang diverifikasi.
+- Dashboard scoped API keys, dokumentasi OpenAPI di dalam panel, SMTP test delivery, serta Google OIDC untuk email terverifikasi yang cocok dengan akun panel aktif.
+- Branding admin untuk nama/tagline, aksen/tema default, logo, dan favicon dengan upload gambar tervalidasi.
+- Download backup JSON langsung oleh admin dari halaman Settings, tanpa live session/OAuth state dan tanpa encryption key.
 - Sinkronisasi per token yang terisolasi, scheduler, cache, timeout, bounded retry/backoff, penanganan 429, job history, retry manual untuk sync, dan audit logs.
 - Argon2id, opaque HttpOnly sessions, CSRF + Origin/Fetch-Site checks, admin authorization, login/API rate limits, AES-256-GCM token encryption, health checks, dan bootstrap admin satu kali.
 
@@ -32,42 +36,40 @@ Tidak ada `DATABASE_URL`, PostgreSQL, `pg_dump`, SQL migration, atau database co
 
 Prasyarat: Node.js `>=22.12` dan npm.
 
-### 1. Install, konfigurasi, dan build
+### 1. Setup interaktif
 
 ```bash
 npm run setup
-
-cp .env.example .env
-chmod 600 .env
-openssl rand -hex 32
 ```
 
-`npm run setup` memasang dependency root, backend, dan frontend dengan `npm ci --include=dev`. Opsi tersebut penting karena TypeScript, `@types/node`, dan build tools lainnya adalah dev dependency; jangan memakai `--omit=dev` sebelum build, termasuk saat `NODE_ENV=production`.
+Wizard memasang dependency root/backend/frontend dengan `npm ci --include=dev`, membangun aplikasi, lalu meminta:
 
-Edit `.env`:
+- username/password admin pertama dan email opsional untuk Google OIDC;
+- nama serta tagline website;
+- origin publik dan port Node.js;
+- konfirmasi HTTP hanya untuk development localhost.
 
-- Masukkan hasil random key sebagai `TOKEN_ENCRYPTION_KEY`.
-- Untuk production di belakang HTTPS, gunakan `NODE_ENV=production`, `APP_ORIGIN=https://domain-anda`, dan `COOKIE_SECURE=true`.
-- Untuk uji lokal melalui HTTP, gunakan `NODE_ENV=development`, `APP_ORIGIN=http://localhost:3000`, dan `COOKIE_SECURE=false`.
-- Default database adalah `./data/database.json`; ubah `DATA_FILE` bila perlu.
+Wizard membuat encryption key acak, menyimpan `.env` dengan permission `0600`, dan membuat admin pada database JSON. Password admin tidak ditulis ke `.env`, tidak dicetak, dan tidak memiliki nilai default permanen. Setup menolak menimpa `.env` kecuali `--force` diberikan secara sengaja. Gunakan `npm run setup -- --skip-install` hanya bila dependency locked sudah terpasang.
+
+Untuk automation yang benar-benar non-interaktif, sediakan secret melalui environment process (bukan menyimpannya di source):
 
 ```bash
-npm run build
+# Isi variable rahasia terlebih dahulu melalui secret manager, lalu:
+export SETUP_NONINTERACTIVE=true
+export ADMIN_USERNAME ADMIN_PASSWORD ADMIN_EMAIL
+export SITE_NAME SITE_TAGLINE APP_ORIGIN PORT
+npm run setup
 ```
 
-### 2. Bootstrap admin satu kali
+Variable tersebut harus sudah diberi nilai oleh secret manager/CI sebelum `export`. `ADMIN_EMAIL` dapat berupa string kosong. Setup tetap menjalankan build dan validasi yang sama. Jangan menaruh `ADMIN_PASSWORD` permanen di `.env`.
 
-```bash
-read -rp "Admin username: " ADMIN_USERNAME
-read -rsp "Admin password (min. 12 karakter): " ADMIN_PASSWORD; echo
-export ADMIN_USERNAME ADMIN_PASSWORD
-npm run bootstrap:admin
-unset ADMIN_USERNAME ADMIN_PASSWORD
-```
+Alternatif manual untuk instalasi yang sudah ada tetap tersedia: `npm run setup:install` hanya memasang dependency. Salin `.env.example` ke `.env`, ganti origin/key, build dengan `npm run build`, lalu jalankan `npm run bootstrap:admin` dengan `ADMIN_USERNAME`, `ADMIN_PASSWORD`, dan `ADMIN_EMAIL` opsional pada environment satu kali.
 
-Bootstrap ditolak jika user sudah ada. Tidak ada kredensial default permanen.
+Untuk production di belakang HTTPS gunakan `NODE_ENV=production`, `APP_ORIGIN=https://domain-anda`, dan `COOKIE_SECURE=true`. Untuk HTTP lokal gunakan `NODE_ENV=development`, `APP_ORIGIN=http://localhost:3000`, dan `COOKIE_SECURE=false`. Browser tidak pernah menerima credential UpCloud/Proxmox atau memanggil provider secara langsung.
 
-### 3. Start aplikasi
+SMTP dan Google bersifat opsional. Isi konfigurasi pada `.env` sesuai komentar di `.env.example`; Google memerlukan redirect URI `${APP_ORIGIN}/api/auth/google/callback` dan email unik pada akun panel yang sudah ada. Test SMTP/Google nyata memerlukan service dan credential yang diotorisasi.
+
+### 2. Start aplikasi
 
 ```bash
 node server.js
@@ -95,7 +97,7 @@ Untuk start otomatis setelah reboot, gunakan `pm2 save` dan perintah `pm2 startu
 
 ## Deployment penuh ke Cloudflare Workers
 
-Opsi ini menjalankan frontend, API, session/auth, token encryption, sinkronisasi, kontrol UpCloud, job, guest-agent ingestion, backup, dan WebSocket di Cloudflare. Ini **bukan proxy ke Node.js**. Satu Durable Object menserialkan transaksi dan satu object R2 menyimpan `database.json`.
+Opsi ini menjalankan frontend, API, session/auth, token encryption, sinkronisasi, lifecycle/deployment UpCloud, Proxmox, scoped API keys, branding, Google/SMTP, job, guest-agent ingestion, backup, dan WebSocket di Cloudflare. Ini **bukan proxy ke Node.js**. Satu Durable Object menserialkan transaksi dan satu object R2 menyimpan `database.json`.
 
 Ikuti [docs/cloudflare.md](docs/cloudflare.md) untuk membuat bucket, mengatur encryption key dan bootstrap secret, deploy, bootstrap admin satu kali, serta menghapus bootstrap secret. Node.js tetap diperlukan sebagai build tooling, tetapi tidak diperlukan sebagai server production untuk opsi ini.
 
@@ -121,11 +123,11 @@ npm --prefix worker run typecheck
 npm --prefix worker run check
 ```
 
-Backend integration tests memakai file JSON disposable dan menjalankan encryption, Argon2id/session flow, HTTP routes, sync workers, serta control verification. Hanya external UpCloud gateway/fetch boundary yang di-fake. Test tooling memeriksa backup/restore JSON, checksum, rollback, safety backup, dan lock proses. Live UpCloud test bersifat opt-in dan read-only secara default; lihat [docs/testing.md](docs/testing.md).
+Backend integration tests memakai file JSON disposable dan menjalankan encryption, Argon2id/session flow, HTTP routes, RBAC/scoped keys, sync/lifecycle/deployment jobs, Proxmox task verification, branding/docs, SMTP dengan transport mock, serta Google OIDC dengan provider mock. External provider/network boundary hanya di-fake pada test tersebut; hasilnya bukan klaim integrasi live. Test tooling memeriksa backup/restore JSON, checksum, rollback, safety backup, dan lock proses. Live UpCloud test bersifat opt-in dan read-only secara default; lihat [docs/testing.md](docs/testing.md).
 
 ## Backup dan restore JSON
 
-Admin dapat memilih **Download backup JSON** di halaman Settings pada Node.js maupun Workers. File adalah attachment JSON yang konsisten dan tidak memuat live session maupun `TOKEN_ENCRYPTION_KEY`.
+Admin dapat memilih **Download backup JSON** di halaman Settings pada Node.js maupun Workers. File adalah attachment JSON yang konsisten dan tidak memuat live session/OAuth state maupun `TOKEN_ENCRYPTION_KEY`.
 
 Untuk operasional Node.js, backup CLI juga dapat dilakukan saat aplikasi berjalan karena setiap perubahan database dipublikasikan melalui atomic rename.
 

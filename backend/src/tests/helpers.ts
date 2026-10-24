@@ -10,11 +10,11 @@ import { bootstrapAdmin } from '../auth/service.js';
 import type { UpCloudGateway, UpCloudServerDetails, UpCloudServerSummary, UpCloudStatsSummary } from '../upcloud/types.js';
 
 export const testConfig: AppConfig = {
-  nodeEnv: 'test', port: 0, appOrigin: 'http://localhost', tokenEncryptionKey: Buffer.alloc(32, 7).toString('base64'),
+  nodeEnv: 'test', port: 0, appOrigin: 'http://localhost', siteName: 'CerdasNet', siteTagline: 'VPS Control', tokenEncryptionKey: Buffer.alloc(32, 7).toString('base64'),
   databasePath: path.join(tmpdir(), 'cerdasnet-test-placeholder.json'), cookieSecure: false, trustProxy: 0,
   logLevel: 'fatal', sessionTtlHours: 12, upcloudTimeoutMs: 1000, upcloudRetryBaseMs: 1, upcloudDetailsCacheSeconds: 0,
   syncIntervalSeconds: 300, serverPollSeconds: 5, metricsRefreshSeconds: 60, metricsRetentionDays: 30,
-  controlVerifyTimeoutMs: 500, controlVerifyIntervalMs: 2, autoSyncOnBoot: false,
+  controlVerifyTimeoutMs: 500, controlVerifyIntervalMs: 2, autoSyncOnBoot: false, smtpPort: 587, smtpSecure: false,
 };
 
 export const serverOne: UpCloudServerSummary = {
@@ -58,7 +58,7 @@ export function detailsFor(summary: UpCloudServerSummary): UpCloudServerDetails 
 function stats(variables: UpCloudStatsSummary['variables']): UpCloudStatsSummary { return { period: 'daily', variables }; }
 
 export class FakeUpCloud implements UpCloudGateway {
-  servers: UpCloudServerSummary[] = [serverOne, serverTwo];
+  servers: UpCloudServerSummary[] = [structuredClone(serverOne), structuredClone(serverTwo)];
   details = new Map<string, UpCloudServerDetails>();
   getAccount = vi.fn(async () => ({ username: 'cerdasnet-test' }));
   listServers = vi.fn(async () => this.servers);
@@ -88,8 +88,40 @@ export class FakeUpCloud implements UpCloudGateway {
     { title: 'In', current: '8 Mbps', average: '4 Mbps', maximum: '20 Mbps', total: '1 GiB' },
     { title: 'Out', current: '2 Mbps', average: '1 Mbps', maximum: '10 Mbps', total: '512 MiB' },
   ]));
+  listTemplates = vi.fn(async () => [
+    { uuid: '01000000-0000-4000-8000-000030240200', title: 'Ubuntu Server 24.04 LTS', sizeGib: 10, zone: null, access: 'public' },
+    { uuid: '01000000-0000-4000-8000-000020120100', title: 'Debian GNU/Linux 12', sizeGib: 10, zone: null, access: 'public' },
+  ]);
+  listPlans = vi.fn(async () => [
+    { name: '2xCPU-4GB', coreNumber: 2, memoryMib: 4096, storageGib: 50, storageTier: 'maxiops', publicTrafficOutGib: 2048 },
+  ]);
+  listZones = vi.fn(async () => [{ id: 'sg-sin1', description: 'Singapore #1', public: true }]);
+  createServer = vi.fn(async (input: any) => {
+    const summary = { ...serverFour, title: input.title, hostname: input.hostname, zone: input.zone, plan: input.plan, state: 'started' };
+    this.servers.push(summary);
+    const detail = detailsFor(summary);
+    this.details.set(summary.uuid, detail);
+    return detail;
+  });
+  rebuildServer = vi.fn(async (uuid: string, input: any) => {
+    const detail = this.changeState(uuid, 'stopped');
+    const template = (await this.listTemplates()).find((row) => row.uuid === input.templateUuid);
+    if (template) {
+      detail.osName = template.title;
+      detail.storages![0]!.labels = [{ key: '_os_brand_name', value: template.title }];
+    }
+    return detail;
+  });
   startServer = vi.fn(async (uuid: string) => this.changeState(uuid, 'started'));
-  stopServer = vi.fn(async (uuid: string) => this.changeState(uuid, 'stopped'));
+  stopServer = vi.fn(async (uuid: string, _stopType: 'soft' | 'hard' = 'soft') => this.changeState(uuid, 'stopped'));
+  updateConfiguration = vi.fn(async (uuid: string, input: any) => {
+    const current = await this.getServer(uuid);
+    const summary = this.servers.find((row) => row.uuid === uuid)!;
+    if (input.plan) summary.plan = input.plan;
+    const next = { ...current, plan: summary.plan, config: { ...current.config, ...input, boot_order: input.bootOrder ?? current.config.boot_order, nic_model: input.nicModel ?? current.config.nic_model } };
+    this.details.set(uuid, next); return next;
+  });
+  deleteServer = vi.fn(async (uuid: string) => { this.servers = this.servers.filter((row) => row.uuid !== uuid); this.details.delete(uuid); });
   restartServer = vi.fn(async (uuid: string) => this.changeState(uuid, 'started'));
 
   private changeState(uuid: string, state: string) {

@@ -1,4 +1,5 @@
 import { randomId } from '../lib/crypto.js';
+import { z } from 'zod';
 import type { AppConfig } from '../config.js';
 import type { Database } from '../db/index.js';
 import { AppError } from '../lib/errors.js';
@@ -11,6 +12,7 @@ export type AuthContext = {
   user: PanelUser;
   csrfToken: string;
   expiresAt: Date;
+  apiKey?: { id: string; scopes: string[] };
 };
 
 export class AuthService {
@@ -24,6 +26,12 @@ export class AuthService {
     }
     const valid = await verifyPassword(user.password_hash, password);
     if (!valid || user.disabled) throw new AppError(401, 'UNAUTHENTICATED', 'Username atau password tidak sesuai.');
+    return this.createSessionForUser(user.id, metadata);
+  }
+
+  async createSessionForUser(userId: string, metadata: { ipAddress?: string; userAgent?: string }) {
+    const user = await this.db.read((data) => data.users.find((row) => row.id === userId && !row.disabled));
+    if (!user) throw new AppError(403, 'FORBIDDEN', 'Akun panel tidak aktif.');
     const sessionToken = randomToken();
     const csrfToken = randomHex();
     const sessionId = randomId();
@@ -71,6 +79,16 @@ export class AuthService {
     });
   }
 
+  async setEmail(userId: string, email: string | null): Promise<{ email: string | null }> {
+    await this.db.withTransaction(({ data }) => {
+      const user = data.users.find((row) => row.id === userId && !row.disabled);
+      if (!user) throw new AppError(404, 'NOT_FOUND', 'Akun tidak ditemukan.');
+      if (email && data.users.some((row) => row.id !== userId && row.email?.toLowerCase() === email.toLowerCase())) throw new AppError(409, 'CONFLICT', 'Email sudah digunakan akun lain.');
+      user.email = email; user.updated_at = new Date().toISOString();
+    });
+    return { email };
+  }
+
   async changePassword(userId: string, currentPassword: string, newPassword: string): Promise<void> {
     const user = await this.db.read((data) => data.users.find((row) => row.id === userId && !row.disabled));
     if (!user || !await verifyPassword(user.password_hash, currentPassword)) {
@@ -87,7 +105,9 @@ export class AuthService {
   }
 }
 
-export async function bootstrapAdmin(db: Database, username: string, password: string): Promise<PanelUser> {
+export async function bootstrapAdmin(db: Database, username: string, password: string, email: string | null = null): Promise<PanelUser> {
+  const normalizedEmail = email?.trim().toLowerCase() || null;
+  if (normalizedEmail && !z.string().email().max(320).safeParse(normalizedEmail).success) throw new AppError(400, 'EMAIL_INVALID', 'Format email admin tidak valid.');
   const user: PanelUser = { id: randomId(), username, role: 'admin' };
   const passwordHash = await hashPassword(password);
   await db.withTransaction(({ data }) => {
@@ -97,7 +117,7 @@ export async function bootstrapAdmin(db: Database, username: string, password: s
     const now = new Date().toISOString();
     data.users.push({
       id: user.id, username: user.username, password_hash: passwordHash, role: user.role,
-      disabled: false, created_at: now, updated_at: now,
+      email: normalizedEmail, display_name: null, disabled: false, created_at: now, updated_at: now,
     });
   });
   return user;

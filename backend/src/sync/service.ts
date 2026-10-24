@@ -8,13 +8,13 @@ import { appendAudit } from '../lib/audit.js';
 import type { PanelEvents } from '../lib/events.js';
 import { TokenService } from '../tokens/service.js';
 import { UpCloudApiError } from '../upcloud/client.js';
-import type { UpCloudServerDetails, UpCloudServerSummary } from '../upcloud/types.js';
+import type { UpCloudDeploymentInput, UpCloudGateway, UpCloudRebuildInput, UpCloudServerDetails, UpCloudServerSummary } from '../upcloud/types.js';
 import { deactivateMissingMemberships, persistServer, upsertMembership } from '../servers/catalog.js';
 import { SettingsService } from '../settings/service.js';
 
 type JobType = SyncJobRecord['job_type'];
 type TriggerType = SyncJobRecord['trigger_type'];
-type ControlAction = 'start' | 'stop' | 'restart';
+type ControlAction = 'start' | 'stop' | 'hard_stop' | 'restart';
 type JobRow = SyncJobRecord;
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -56,6 +56,16 @@ export class SyncService {
   async enqueueControl(serverUuid: string, action: ControlAction, requestedBy: string) {
     const token = await this.tokens.bestForServer(serverUuid);
     return this.enqueue('server_control', { tokenId: token.id, serverUuid, requestedBy, details: { action } });
+  }
+
+  async enqueueRebuild(serverUuid: string, input: UpCloudRebuildInput & { shutdownFirst: boolean; mode: 'change_os' | 'reset_os' }, requestedBy: string) {
+    const token = await this.tokens.bestForServer(serverUuid);
+    return this.enqueue('server_rebuild', { tokenId: token.id, serverUuid, requestedBy, details: { ...input } });
+  }
+
+  async enqueueDeployment(tokenId: string, input: UpCloudDeploymentInput, requestedBy: string) {
+    await this.tokens.requireRecord(tokenId);
+    return this.enqueue('server_deploy', { tokenId, requestedBy, details: { deployment: input } });
   }
 
   async enqueueSyncAll(requestedBy: string | null, trigger: TriggerType = 'manual') {
@@ -105,8 +115,8 @@ export class SyncService {
     if (!['failed', 'verification_timeout'].includes(job.status)) {
       throw new AppError(409, 'CONFLICT', 'Hanya job yang gagal atau timeout yang dapat dicoba ulang.');
     }
-    if (job.job_type === 'server_control') {
-      throw new AppError(409, 'CONFLICT', 'Operasi power tidak di-retry otomatis. Refresh status lalu kirim tindakan baru secara sadar.');
+    if (['server_control', 'server_rebuild', 'server_deploy'].includes(job.job_type)) {
+      throw new AppError(409, 'CONFLICT', 'Operasi upstream tidak di-retry otomatis. Refresh status lalu kirim tindakan baru secara sadar.');
     }
     if (job.job_type === 'token_sync' && job.token_id) return this.enqueueTokenSync(job.token_id, requestedBy, 'retry');
     if (job.job_type === 'server_sync' && job.server_uuid) return this.enqueueServerSync(job.server_uuid, requestedBy, 'retry');
@@ -143,8 +153,8 @@ export class SyncService {
         if (!activeJobStatuses.has(job.status)) return false;
         if (input.tokenId && job.token_id === input.tokenId) return true;
         return Boolean(input.serverUuid && job.server_uuid === input.serverUuid
-          && ['server_sync', 'server_control'].includes(jobType)
-          && ['server_sync', 'server_control'].includes(job.job_type));
+          && ['server_sync', 'server_control', 'server_rebuild'].includes(jobType)
+          && ['server_sync', 'server_control', 'server_rebuild'].includes(job.job_type));
       });
       if (conflict) throw new AppError(409, 'CONFLICT', 'Sudah ada job aktif untuk resource ini. Tunggu hingga selesai.');
       const now = new Date().toISOString();
@@ -185,7 +195,13 @@ export class SyncService {
     try {
       if (job.job_type === 'token_sync') await this.runTokenSync(job);
       else if (job.job_type === 'server_sync') await this.runServerSync(job);
-      else {
+      else if (job.job_type === 'server_rebuild') {
+        action = `server.${job.details.mode === 'reset_os' ? 'reset_os' : 'change_os'}`;
+        await this.runRebuild(job);
+      } else if (job.job_type === 'server_deploy') {
+        action = 'server.deploy';
+        await this.runDeploy(job);
+      } else {
         action = `server.${job.details.action ?? 'control'}`;
         await this.runControl(job);
       }
@@ -341,22 +357,101 @@ export class SyncService {
     }
   }
 
+  private async runRebuild(job: JobRow): Promise<void> {
+    if (!job.server_uuid || !job.token_id) throw new AppError(409, 'CONFLICT', 'Resource rebuild sudah tidak tersedia.');
+    const token = await this.tokens.requireRecord(job.token_id);
+    const client = this.tokens.gatewayFor(token);
+    const uuid = job.server_uuid;
+    const input = job.details as unknown as UpCloudRebuildInput & { shutdownFirst: boolean };
+    if (!input.templateUuid || !input.detachDisk) throw new AppError(400, 'BAD_REQUEST', 'Parameter rebuild tidak lengkap.');
+    let current = await client.getServer(uuid);
+    if (current.state !== 'stopped') {
+      if (!input.shutdownFirst) throw new AppError(409, 'SERVER_NOT_STOPPED', 'VPS harus berada dalam status stopped sebelum rebuild OS.');
+      const stopping = await client.stopServer(uuid);
+      await this.db.withTransaction(({ data }) => {
+        persistServer(data, stopping, { syncStatus: 'degraded', error: 'Menunggu VPS stopped sebelum rebuild OS.' });
+        upsertMembership(data, token.id, uuid);
+      });
+      await this.verifyExpected(job, client, token, uuid, 'stopped');
+    }
+    await this.updateJob(job.id, { details: { ...job.details, phase: 'rebuild_requested' } });
+    const response = await client.rebuildServer(uuid, input);
+    await this.db.withTransaction(({ data }) => {
+      persistServer(data, response, { syncStatus: 'degraded', error: 'Rebuild diterima UpCloud; menunggu maintenance selesai dan status stopped.' });
+      upsertMembership(data, token.id, uuid);
+    });
+    await this.updateJob(job.id, { status: 'verifying', details: { ...job.details, phase: 'rebuild_verifying' } });
+    await this.publish(job.id);
+    await this.verifyExpected(job, client, token, uuid, 'stopped');
+    current = await client.getServer(uuid);
+    await this.db.withTransaction(({ data }) => { persistServer(data, current); upsertMembership(data, token.id, uuid); });
+    await this.tokens.markSuccess(token.id, false);
+  }
+
+  private async runDeploy(job: JobRow): Promise<void> {
+    if (!job.token_id) throw new AppError(409, 'CONFLICT', 'Token deployment sudah tidak tersedia.');
+    const token = await this.tokens.requireRecord(job.token_id);
+    if (!token.enabled) throw new AppError(409, 'CONFLICT', 'Token sedang dinonaktifkan.');
+    const client = this.tokens.gatewayFor(token);
+    const input = job.details.deployment as unknown as UpCloudDeploymentInput;
+    if (!input?.templateUuid || !input.hostname) throw new AppError(400, 'BAD_REQUEST', 'Parameter deployment tidak lengkap.');
+    const created = await client.createServer(input);
+    job.server_uuid = created.uuid;
+    await this.db.withTransaction(({ data }) => {
+      persistServer(data, created, { syncStatus: 'degraded', error: 'Deployment diterima; menunggu provisioning selesai.' });
+      upsertMembership(data, token.id, created.uuid);
+      const current = data.sync_jobs.find((row) => row.id === job.id);
+      if (current) current.server_uuid = created.uuid;
+      const requester = data.users.find((row) => row.id === job.requested_by && row.role === 'client' && !row.disabled);
+      if (requester && !data.client_server_access.some((row) => row.user_id === requester.id && row.server_uuid === created.uuid)) {
+        const now = new Date().toISOString();
+        data.client_server_access.push({ user_id: requester.id, server_uuid: created.uuid, expires_at: null, created_at: now, updated_at: now });
+      }
+    });
+    await this.updateJob(job.id, { status: 'verifying', details: { ...job.details, phase: 'deployment_verifying' } });
+    await this.publish(job.id);
+    await this.verifyExpected(job, client, token, created.uuid, 'ready');
+    const current = await client.getServer(created.uuid);
+    await this.db.withTransaction(({ data }) => { persistServer(data, current); upsertMembership(data, token.id, created.uuid); });
+    await this.tokens.markSuccess(token.id, false);
+  }
+
+  private async verifyExpected(
+    job: JobRow, client: UpCloudGateway, token: { id: string }, uuid: string, expected: 'started' | 'stopped' | 'ready',
+  ): Promise<void> {
+    const deadline = Date.now() + this.config.controlVerifyTimeoutMs;
+    let stable = 0;
+    while (Date.now() < deadline) {
+      await sleep(this.config.controlVerifyIntervalMs);
+      const current = await client.getServer(uuid);
+      const matches = expected === 'ready' ? !['maintenance', 'error', 'unknown'].includes(current.state) : current.state === expected;
+      stable = matches ? stable + 1 : 0;
+      await this.db.withTransaction(({ data }) => {
+        persistServer(data, current, stable >= 2 ? {} : { syncStatus: 'degraded', error: `Menunggu status ${expected} terverifikasi.` });
+        upsertMembership(data, token.id, uuid);
+      });
+      this.events.publish({ type: 'server', payload: { uuid } });
+      if (stable >= 2) return;
+    }
+    throw new VerificationTimeout();
+  }
+
   private async runControl(job: JobRow): Promise<void> {
     if (!job.server_uuid || !job.token_id) throw new AppError(409, 'CONFLICT', 'Resource job sudah tidak tersedia.');
     const token = await this.tokens.requireRecord(job.token_id);
     const client = this.tokens.gatewayFor(token);
     const action = job.details.action;
-    if (!['start', 'stop', 'restart'].includes(String(action))) throw new AppError(400, 'BAD_REQUEST', 'Aksi server tidak valid.');
+    if (!['start', 'stop', 'hard_stop', 'restart'].includes(String(action))) throw new AppError(400, 'BAD_REQUEST', 'Aksi server tidak valid.');
     const uuid = job.server_uuid;
     const response = action === 'start' ? await client.startServer(uuid)
-      : action === 'stop' ? await client.stopServer(uuid) : await client.restartServer(uuid);
+      : action === 'stop' ? await client.stopServer(uuid) : action === 'hard_stop' ? await client.stopServer(uuid, 'hard') : await client.restartServer(uuid);
     await this.db.withTransaction(({ data }) => {
       persistServer(data, response, { syncStatus: 'degraded', error: 'Operasi diterima; menunggu verifikasi status target.' });
       upsertMembership(data, token.id, uuid);
     });
     await this.updateJob(job.id, { status: 'verifying' });
     await this.publish(job.id);
-    const expected = action === 'stop' ? 'stopped' : 'started';
+    const expected = action === 'stop' || action === 'hard_stop' ? 'stopped' : 'started';
     const deadline = Date.now() + this.config.controlVerifyTimeoutMs;
     let stableObservations = 0;
     while (Date.now() < deadline) {
@@ -387,7 +482,16 @@ export class SyncService {
       id: row.id, type: row.job_type, status: row.status, tokenId: row.token_id, serverUuid: row.server_uuid,
       requestedBy: row.requested_by, trigger: row.trigger_type, attempts: row.attempts,
       error: row.error_message ? { code: row.error_code, message: row.error_message } : null,
-      details: row.details, createdAt: row.created_at,
+      details: (() => {
+        const details: Record<string, unknown> = { ...row.details };
+        delete details.sshKeys;
+        if (details.deployment && typeof details.deployment === 'object') {
+          const deployment = { ...details.deployment as Record<string, unknown> };
+          delete deployment.sshKeys; delete deployment.userData;
+          details.deployment = deployment;
+        }
+        return details;
+      })(), createdAt: row.created_at,
       startedAt: row.started_at, finishedAt: row.finished_at, updatedAt: row.updated_at,
     };
   }
@@ -406,6 +510,7 @@ export class SyncScheduler {
     private readonly sync: SyncService,
     private readonly settings: SettingsService,
     private readonly logger?: SchedulerLogger,
+    private readonly proxmox?: { syncAll: () => Promise<unknown> },
   ) {}
 
   async start(runOnBoot: boolean): Promise<void> {
@@ -440,7 +545,7 @@ export class SyncScheduler {
     if (Date.now() - this.lastRun < settings.syncIntervalSeconds * 1000) return;
     this.running = true;
     this.lastRun = Date.now();
-    try { await this.sync.enqueueSyncAll(null, 'automatic'); } finally { this.running = false; }
+    try { await Promise.all([this.sync.enqueueSyncAll(null, 'automatic'), this.proxmox?.syncAll()]); } finally { this.running = false; }
   }
 
   private async cleanup(): Promise<void> {

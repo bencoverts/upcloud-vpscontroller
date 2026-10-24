@@ -13,15 +13,19 @@ const baseCollections = [
   'users', 'sessions', 'api_tokens', 'servers', 'token_server_memberships', 'token_server_groups',
   'server_storage', 'server_networks', 'server_metrics', 'sync_jobs', 'audit_logs', 'app_settings',
 ];
-const currentCollections = [...baseCollections.slice(0, 2), 'client_server_access', 'server_agents', ...baseCollections.slice(2)];
+const v2Collections = [...baseCollections.slice(0, 2), 'client_server_access', 'server_agents', ...baseCollections.slice(2)];
+const v3Collections = [
+  ...v2Collections.slice(0, 5), 'panel_api_keys', 'oauth_identities', 'oauth_states',
+  'proxmox_connections', 'proxmox_resources', ...v2Collections.slice(5),
+];
 
 export function validateDatabase(value, source = 'JSON database') {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${source} must contain an object.`);
-  if (![1, 2].includes(value.schemaVersion)) throw new Error(`${source} has an unsupported schemaVersion.`);
+  if (![1, 2, 3].includes(value.schemaVersion)) throw new Error(`${source} has an unsupported schemaVersion.`);
   if (typeof value.createdAt !== 'string' || typeof value.updatedAt !== 'string') throw new Error(`${source} timestamps are missing.`);
   if (!Number.isInteger(value.nextMetricId) || value.nextMetricId < 1
     || !Number.isInteger(value.nextAuditId) || value.nextAuditId < 1) throw new Error(`${source} ID counters are invalid.`);
-  const collections = value.schemaVersion === 2 ? currentCollections : baseCollections;
+  const collections = value.schemaVersion === 3 ? v3Collections : value.schemaVersion === 2 ? v2Collections : baseCollections;
   for (const name of collections) {
     if (!Array.isArray(value[name])) throw new Error(`${source} collection ${name} must be an array.`);
   }

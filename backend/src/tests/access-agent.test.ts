@@ -164,7 +164,8 @@ describe('client assignment expiry and guest agent security', () => {
       expect(response.status).toBe(200);
       expect(response.headers['content-disposition']).toContain('attachment;');
       const backup = JSON.parse(response.body.toString('utf8'));
-      expect(backup.schemaVersion).toBe(2);
+      expect(backup.schemaVersion).toBe(3);
+      expect(backup.oauth_states).toEqual([]);
       expect(backup.sessions).toEqual([]);
       expect(backup.users.some((user: any) => user.username === 'admin')).toBe(true);
     } finally { await harness.close(); }

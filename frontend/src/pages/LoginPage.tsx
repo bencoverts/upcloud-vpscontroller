@@ -1,7 +1,10 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { Activity, ArrowRight, Eye, EyeOff, KeyRound, LockKeyhole, Moon, ShieldCheck, Sun } from 'lucide-react';
+import { api } from '../api';
+import { useBranding } from '../context/BrandingContext';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { Brand } from '../components/Layout';
@@ -9,6 +12,9 @@ import { Button, Field, inputClass } from '../components/ui';
 
 export default function LoginPage() {
   const { login } = useAuth();
+  const branding = useBranding();
+  const [searchParams] = useSearchParams();
+  const google = useQuery({ queryKey: ['google-auth-status'], queryFn: () => api.get<{ enabled: boolean }>('/api/auth/google/status'), retry: 0 });
   const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
   const location = useLocation();
@@ -16,7 +22,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState(searchParams.get('oauth') === 'failed' ? 'Google Auth gagal atau email belum terhubung ke akun panel.' : '');
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     setError('');
@@ -48,16 +54,17 @@ export default function LoginPage() {
       <section className="mx-auto w-full max-w-md">
         <div className="mb-10 lg:hidden"><Brand /></div>
         <div className="rounded-[28px] border border-white/80 bg-white/90 p-6 shadow-[0_24px_80px_-24px_rgb(15_23_42_/_0.18)] backdrop-blur-xl dark:border-slate-800 dark:bg-slate-900/85 sm:p-8">
-          <div className="mb-8"><div className="mb-4 flex h-11 w-11 items-center justify-center rounded-2xl bg-teal-50 text-teal-600 dark:bg-teal-500/10 dark:text-teal-400"><LockKeyhole className="h-5 w-5" /></div><h2 className="text-2xl font-bold tracking-tight text-slate-950 dark:text-white">Selamat datang kembali</h2><p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Masuk ke konsol admin atau client CerdasNet.</p></div>
+          <div className="mb-8"><div className="mb-4 flex h-11 w-11 items-center justify-center rounded-2xl bg-teal-50 text-teal-600 dark:bg-teal-500/10 dark:text-teal-400"><LockKeyhole className="h-5 w-5" /></div><h2 className="text-2xl font-bold tracking-tight text-slate-950 dark:text-white">Selamat datang kembali</h2><p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Masuk ke konsol admin atau client {branding.siteName}.</p></div>
           <form onSubmit={submit} className="space-y-5">
             <Field label="Username" required><input id="username" className={inputClass} value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" autoFocus required minLength={3} maxLength={64} placeholder="Username" /></Field>
             <Field label="Password" required><div className="relative"><input id="password" className={`${inputClass} pr-11`} type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required maxLength={256} placeholder="Password" /><button type="button" onClick={() => setShowPassword((value) => !value)} className="absolute top-1/2 right-3 -translate-y-1/2 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200" aria-label={showPassword ? 'Sembunyikan password' : 'Tampilkan password'}>{showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}</button></div></Field>
             {error && <div role="alert" className="rounded-xl border border-rose-100 bg-rose-50 px-3.5 py-3 text-xs leading-5 text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-300">{error}</div>}
             <Button type="submit" loading={loading} className="w-full" disabled={!username || !password}>{loading ? 'Memverifikasi…' : 'Masuk ke dashboard'}{!loading && <ArrowRight className="h-4 w-4" />}</Button>
           </form>
+          {google.data?.enabled && <><div className="my-5 flex items-center gap-3 text-[10px] text-slate-400"><span className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />atau<span className="h-px flex-1 bg-slate-200 dark:bg-slate-800" /></div><Button variant="outline" className="w-full" onClick={() => window.location.assign('/api/auth/google')}><svg className="h-4 w-4" viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285F4" d="M21.6 12.2c0-.7-.1-1.4-.2-2H12v3.9h5.4a4.6 4.6 0 0 1-2 3v2.5h3.2c1.9-1.7 3-4.3 3-7.4Z"/><path fill="#34A853" d="M12 22c2.7 0 5-.9 6.6-2.4l-3.2-2.5c-.9.6-2 1-3.4 1a5.9 5.9 0 0 1-5.5-4.1H3.2v2.6A10 10 0 0 0 12 22Z"/><path fill="#FBBC05" d="M6.5 14a6 6 0 0 1 0-3.9V7.5H3.2a10 10 0 0 0 0 9.1L6.5 14Z"/><path fill="#EA4335" d="M12 6c1.5 0 2.8.5 3.8 1.5L18.7 4.6A10 10 0 0 0 3.2 7.5L6.5 10A5.9 5.9 0 0 1 12 6Z"/></svg>Masuk dengan Google</Button></>}
           <div className="mt-6 flex items-start gap-2 border-t border-slate-100 pt-5 text-[11px] leading-5 text-slate-400 dark:border-slate-800 dark:text-slate-500"><ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-teal-500" />Session HttpOnly, CSRF protection, Argon2id, dan login rate limiting aktif.</div>
         </div>
-        <p className="mt-6 text-center text-[11px] text-slate-400 dark:text-slate-600">CerdasNet VPS Control · UpCloud API 1.3</p>
+        <p className="mt-6 text-center text-[11px] text-slate-400 dark:text-slate-600">{branding.siteName} {branding.siteTagline} · UpCloud API 1.3</p>
       </section>
     </div>
   </div>;

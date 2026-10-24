@@ -21,7 +21,7 @@ export function syncRoutes(db: Database, sync: SyncService): Router {
   router.get('/jobs/:id', async (req, res, next) => {
     try {
       const job = await sync.getJob(z.string().uuid().parse(req.params.id));
-      if (req.auth!.user.role !== 'admin') {
+      if (req.auth!.user.role !== 'admin' && job.requestedBy !== req.auth!.user.id) {
         if (!job.serverUuid) requireAdmin(req.auth!.user);
         else await requireServerAccess(db, req.auth!.user, job.serverUuid);
       }

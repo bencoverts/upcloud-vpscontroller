@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Activity, CheckCircle2, Clock3, Database, Download, KeyRound, RefreshCw, Save, ShieldCheck, SlidersHorizontal, XCircle } from 'lucide-react';
+import BrandingSettings, { IntegrationSettings } from '../components/BrandingSettings';
 import { api } from '../api';
 import type { Settings } from '../types';
 import { useAuth } from '../context/AuthContext';
@@ -13,12 +14,29 @@ export default function SettingsPage() {
   const health = useQuery({ queryKey: ['health'], queryFn: () => api.get<{ status: string; database: string; storage: string }>('/health/ready'), refetchInterval: 30_000, retry: 0 });
   return <>
     <PageHeader eyebrow="Panel configuration" title="Settings" description="Atur frekuensi sinkronisasi, polling UI, pengambilan metrik, dan retensi sampel lokal." />
-    <div className="grid items-start gap-6 xl:grid-cols-[1fr_340px]"><div className="space-y-6"><div>{settings.isLoading ? <Skeleton className="h-[520px]" /> : settings.error ? <Card><ErrorState error={settings.error} retry={() => void settings.refetch()} /></Card> : settings.data && <SettingsForm key={JSON.stringify(settings.data)} initial={settings.data} />}</div><PasswordForm /></div>
+    <div className="grid items-start gap-6 xl:grid-cols-[1fr_340px]"><div className="space-y-6"><div>{settings.isLoading ? <Skeleton className="h-[520px]" /> : settings.error ? <Card><ErrorState error={settings.error} retry={() => void settings.refetch()} /></Card> : settings.data && <SettingsForm key={JSON.stringify(settings.data)} initial={settings.data} />}</div><BrandingSettings /><IntegrationSettings /><AccountEmailForm /><PasswordForm /></div>
       <div className="space-y-5"><AdminBackup /><Card className="p-5"><div className="flex items-center justify-between"><div className="flex items-center gap-2"><Activity className="h-4 w-4 text-teal-500" /><h2 className="text-sm font-bold">Status backend</h2></div>{health.isLoading ? <Badge>Memeriksa</Badge> : health.error ? <Badge tone="red">Tidak ready</Badge> : <Badge tone="green">Ready</Badge>}</div><div className="mt-4 space-y-3 text-xs"><div className="flex items-center justify-between"><span className="text-slate-400">HTTP API</span><span className="flex items-center gap-1.5 font-medium">{health.error ? <XCircle className="h-4 w-4 text-rose-500" /> : <CheckCircle2 className="h-4 w-4 text-emerald-500" />}{health.error ? 'Gagal' : 'Merespons'}</span></div><div className="flex items-center justify-between"><span className="text-slate-400">{health.data?.storage === 'r2_json' ? 'JSON R2 / Durable Object' : 'Database JSON lokal'}</span><span className="flex items-center gap-1.5 font-medium"><Database className="h-4 w-4 text-slate-400" />{health.data?.database ?? 'unknown'}</span></div></div><Button className="mt-4 w-full" variant="outline" size="sm" onClick={() => void health.refetch()}><RefreshCw className="h-3.5 w-3.5" />Periksa ulang</Button></Card>
         <Card className="p-5"><ShieldCheck className="h-5 w-5 text-teal-500" /><h2 className="mt-3 text-sm font-bold">Batas keamanan</h2><ul className="mt-3 space-y-2.5 text-xs leading-5 text-slate-400"><li>Token dienkripsi AES-256-GCM dan tidak pernah dikembalikan utuh.</li><li>Browser hanya mengakses API panel same-origin.</li><li>Session menggunakan cookie HttpOnly dan CSRF header.</li><li>Admin mengelola sistem; client hanya dapat mengubah VPS assignment yang masih berlaku.</li></ul></Card>
         <Card className="p-5"><Clock3 className="h-5 w-5 text-sky-500" /><h2 className="mt-3 text-sm font-bold">Tentang interval statistik</h2><p className="mt-2 text-xs leading-5 text-slate-400">Endpoint statistik yang digunakan memberikan daily summary. Polling lebih sering tidak menjamin angka upstream berubah. Interval 300 detik atau lebih disarankan untuk mengurangi beban dan risiko rate limit.</p></Card>
       </div></div>
   </>;
+}
+
+function AccountEmailForm() {
+  const query = useQuery({ queryKey: ['account-email'], queryFn: () => api.get<{ email: string | null }>('/api/auth/email') });
+  if (query.isLoading) return <Skeleton className="h-40" />;
+  if (query.error) return <Card><ErrorState error={query.error} retry={() => void query.refetch()} /></Card>;
+  return <EmailEditor key={query.data?.email ?? 'none'} initial={query.data?.email ?? ''} />;
+}
+function EmailEditor({ initial }: { initial: string }) {
+  const [email, setEmail] = useState(initial); const [saving, setSaving] = useState(false); const { push } = useToast(); const queryClient = useQueryClient();
+  const save = async (event: FormEvent) => {
+    event.preventDefault(); setSaving(true);
+    try { await api.patch('/api/auth/email', { email: email.trim() || null }); await queryClient.invalidateQueries({ queryKey: ['account-email'] }); push('success', 'Email akun disimpan', 'Google Auth akan memverifikasi email ini saat login.'); }
+    catch (error) { push('error', 'Email tidak dapat disimpan', error instanceof Error ? error.message : undefined); }
+    finally { setSaving(false); }
+  };
+  return <Card className="p-5 sm:p-6"><form onSubmit={save} className="flex flex-col gap-3 sm:flex-row sm:items-end"><div className="flex-1"><Field label="Email akun untuk Google Auth" hint="Email harus unik dan harus terverifikasi oleh Google saat login. Kosongkan untuk menghapus pencocokan email."><input type="email" className={inputClass} value={email} onChange={(event) => setEmail(event.target.value)} maxLength={320} placeholder="admin@example.com" /></Field></div><Button type="submit" loading={saving} disabled={email === initial}><Save className="h-4 w-4" />Simpan email</Button></form></Card>;
 }
 
 function AdminBackup() {

@@ -77,7 +77,12 @@ export function serverRoutes(db: Database, sync: SyncService, metrics: MetricsSe
     try {
       const uuid = uuidSchema.parse(req.params.uuid);
       await requireServerAccess(db, req.auth!.user, uuid);
-      const action = z.object({ action: z.enum(['start', 'stop', 'restart']) }).parse(req.body).action;
+      const actionInput = z.object({ action: z.enum(['start', 'stop', 'hard_stop', 'restart']), confirmationTitle: z.string().max(255).optional() }).parse(req.body);
+      const action = actionInput.action;
+      if (action === 'hard_stop') {
+        const server = await getServer(db, uuid, req.auth!.user);
+        if (!server || server.title !== actionInput.confirmationTitle) throw new AppError(400, 'CONFIRMATION_INVALID', 'Hard stop memerlukan judul VPS yang persis.');
+      }
       const job = await sync.enqueueControl(uuid, action, req.auth!.user.id);
       await requestAudit(db, req, {
         action: `server.${action}`, resourceType: 'server', resourceId: uuid, outcome: 'accepted',

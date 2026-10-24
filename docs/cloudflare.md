@@ -5,7 +5,7 @@ Deployment ini tidak mem-proxy API ke server Node.js. Worker menyajikan frontend
 ## Arsitektur data
 
 - **Workers Static Assets:** hasil build React dari `frontend/dist` dengan SPA fallback.
-- **Worker API:** autentikasi, client assignment/expiry, encrypted UpCloud token, sync/power/rename, metrics, agent ingestion, settings, activity, dan backup.
+- **Worker API:** autentikasi/Google OIDC, client assignment/expiry, encrypted UpCloud/Proxmox token, sync/lifecycle/deployment, metrics/agent ingestion, scoped API keys, branding, SMTP, documentation, settings, activity, dan backup.
 - **`PanelDurableObject`:** satu instance bernama `global`; satu writer untuk transaksi, job, alarm, dan koneksi WebSocket.
 - **R2:** satu object `database.json` pada bucket yang dikonfigurasi. R2 menyimpan data persisten; Durable Object mencegah lost update dan menyimpan cache konsisten selama instance aktif.
 - **Secrets:** `TOKEN_ENCRYPTION_KEY` berada di Workers Secrets, bukan di R2, source, atau frontend bundle.
@@ -21,7 +21,7 @@ Model ini cocok untuk panel administrasi dengan satu writer logis. Setiap transa
 Dari root checkout baru, install seluruh dependency build/shared:
 
 ```bash
-npm run setup
+npm run setup:install
 npm --prefix worker ci --include=dev
 ```
 
@@ -33,6 +33,7 @@ Edit `worker/wrangler.jsonc`:
 
 - `name`: nama Worker Anda.
 - `vars.APP_ORIGIN`: origin HTTPS final, tanpa path atau trailing slash.
+- `vars.SITE_NAME` dan `vars.SITE_TAGLINE`: default branding; admin dapat mengubahnya melalui panel setelah bootstrap.
 - `r2_buckets[0].bucket_name`: bucket JSON Anda.
 - Pertahankan `COOKIE_SECURE=true` untuk production.
 - Sesuaikan interval sync/metrics/retention bila perlu.
@@ -82,9 +83,10 @@ Pada shell yang sama, panggil endpoint satu kali. Ganti origin dengan `APP_ORIGI
 PANEL_ORIGIN="https://panel.example.com"
 read -rp "Admin username: " ADMIN_USERNAME
 read -rsp "Admin password (min. 12 karakter): " ADMIN_PASSWORD; echo
-export ADMIN_USERNAME ADMIN_PASSWORD
+read -rp "Admin email (opsional, untuk Google OIDC): " ADMIN_EMAIL
+export ADMIN_USERNAME ADMIN_PASSWORD ADMIN_EMAIL
 
-node -e 'process.stdout.write(JSON.stringify({username:process.env.ADMIN_USERNAME,password:process.env.ADMIN_PASSWORD}))' \
+node -e 'process.stdout.write(JSON.stringify({username:process.env.ADMIN_USERNAME,password:process.env.ADMIN_PASSWORD,email:process.env.ADMIN_EMAIL||null}))' \
   | curl --fail-with-body --silent --show-error \
       --request POST "$PANEL_ORIGIN/api/auth/bootstrap" \
       --header "Origin: $PANEL_ORIGIN" \
@@ -97,10 +99,34 @@ Password minimal 12 karakter dan harus memuat huruf besar, huruf kecil, serta an
 
 ```bash
 npx wrangler secret delete BOOTSTRAP_SECRET
-unset BOOTSTRAP_SECRET TOKEN_ENCRYPTION_KEY ADMIN_USERNAME ADMIN_PASSWORD
+unset BOOTSTRAP_SECRET TOKEN_ENCRYPTION_KEY ADMIN_USERNAME ADMIN_PASSWORD ADMIN_EMAIL
 ```
 
 Bootstrap berikutnya ditolak (`409`) karena user sudah ada. Tidak ada kredensial default permanen. Login admin dan client kemudian menggunakan halaman yang sama.
+
+## Google OIDC dan SMTP (opsional)
+
+Google tidak membuka pendaftaran bebas. Buat user panel terlebih dahulu dan isi email uniknya; login Google hanya berhasil bila email yang diverifikasi Google cocok dengan akun aktif tersebut. Pada Google Cloud Console, daftarkan redirect URI persis `https://panel.example.com/api/auth/google/callback` (ganti origin), lalu pasang credential sebagai Workers Secrets:
+
+```bash
+cd worker
+printf '%s' "$GOOGLE_CLIENT_ID" | npx wrangler secret put GOOGLE_CLIENT_ID
+printf '%s' "$GOOGLE_CLIENT_SECRET" | npx wrangler secret put GOOGLE_CLIENT_SECRET
+```
+
+Untuk SMTP, pasang host, port, mode TLS, username/password opsional, dan alamat pengirim. Password harus selalu menjadi secret; konfigurasi nonrahasia dapat memakai `vars`, tetapi contoh berikut memakai secret untuk seluruh konfigurasi agar tidak tercatat di repository:
+
+```bash
+for name in SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_FROM; do
+  read -rp "$name: " value
+  printf '%s' "$value" | npx wrangler secret put "$name"
+done
+# Jalankan hanya bila SMTP memerlukan autentikasi:
+printf '%s' "$SMTP_USERNAME" | npx wrangler secret put SMTP_USERNAME
+printf '%s' "$SMTP_PASSWORD" | npx wrangler secret put SMTP_PASSWORD
+```
+
+Worker memakai TCP socket asli: TLS langsung untuk port 465 dan STARTTLS untuk mode non-secure seperti submission port 587. [Cloudflare melarang koneksi TCP keluar pada port 25](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/#connections-to-port-25-are-prohibited), jadi gunakan port submission yang disediakan SMTP provider. Panel menolak port 25 secara eksplisit pada Worker. Uji pengiriman hanya ke server/alamat yang diotorisasi; firewall, TLS, AUTH, dan respons non-2xx dilaporkan sebagai kegagalan, bukan sukses palsu.
 
 ## Verifikasi production
 
@@ -115,8 +141,9 @@ Kemudian melalui browser:
 2. Pastikan seluruh VPS yang ditemukan muncul sebelum memilih maksimal dua VPS untuk grouping/display.
 3. Buat client, tetapkan VPS dan expiry, lalu login sebagai client di browser/profile terpisah.
 4. Uji hanya pada VPS nonproduction yang memang diizinkan untuk kontrol/rename.
-5. Buka Settings dan download backup JSON; pastikan file dapat dibuka dan tidak berisi live `sessions`.
-6. Pastikan indikator realtime tersambung. WebSocket menggunakan `/api/events` pada origin yang sama.
+5. Buat scoped API key, ubah branding, dan periksa dokumentasi API dari dalam panel.
+6. Buka Settings dan download backup JSON; pastikan file dapat dibuka dan tidak berisi live `sessions` maupun `oauth_states`.
+7. Pastikan indikator realtime tersambung. WebSocket menggunakan `/api/events` pada origin yang sama.
 
 Jangan menjalankan power/rename test pada production hanya untuk menguji deployment.
 

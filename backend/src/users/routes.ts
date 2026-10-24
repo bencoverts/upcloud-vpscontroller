@@ -10,6 +10,7 @@ const password = z.string().min(12).max(256)
   .regex(/[A-Z]/, 'Password harus mengandung huruf besar.')
   .regex(/[0-9]/, 'Password harus mengandung angka.');
 const id = z.string().uuid();
+const email = z.string().trim().email().max(320).nullable().optional();
 const accessSchema = z.object({
   access: z.array(z.object({
     serverUuid: z.string().uuid(),
@@ -31,7 +32,7 @@ export function userRoutes(db: Database, users: UserService): Router {
   });
   router.post('/', async (req, res, next) => {
     try {
-      const input = z.object({ username, password }).parse(req.body);
+      const input = z.object({ username, password, email }).parse(req.body);
       const user = await users.createClient(input);
       await requestAudit(db, req, { action: 'client.create', resourceType: 'user', resourceId: user.id, outcome: 'success', details: { username: user.username } });
       res.status(201).json({ data: user });
@@ -40,8 +41,8 @@ export function userRoutes(db: Database, users: UserService): Router {
   router.patch('/:id', async (req, res, next) => {
     try {
       const userId = id.parse(req.params.id);
-      const input = z.object({ password: password.optional(), disabled: z.boolean().optional() })
-        .refine((value) => value.password !== undefined || value.disabled !== undefined, 'Tidak ada perubahan.').parse(req.body);
+      const input = z.object({ password: password.optional(), disabled: z.boolean().optional(), email })
+        .refine((value) => value.password !== undefined || value.disabled !== undefined || value.email !== undefined, 'Tidak ada perubahan.').parse(req.body);
       const user = await users.updateClient(userId, input);
       await requestAudit(db, req, {
         action: 'client.update', resourceType: 'user', resourceId: userId, outcome: 'success',

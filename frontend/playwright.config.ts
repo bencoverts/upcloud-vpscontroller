@@ -11,5 +11,6 @@ export default defineConfig({
     headless: true,
     trace: 'off',
     screenshot: 'only-on-failure',
+    launchOptions: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {},
   },
 });
