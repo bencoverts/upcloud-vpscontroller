@@ -426,7 +426,7 @@ export function createWorkerApi(services: ApplicationServices, env: WorkerEnv, o
   });
 
   app.get('/api/backup', async (c) => {
-    const snapshot = await db.read((state) => ({ ...state, sessions: [], oauth_states: [] }));
+    const snapshot = await db.read((state) => ({ ...state, sessions: [], oauth_states: [], direct_login_tokens: [] }));
     await audit(c, services, { action: 'backup.download', resourceType: 'system', outcome: 'success' });
     const stamp = new Date().toISOString().replaceAll(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
     c.header('Content-Type', 'application/json; charset=utf-8');

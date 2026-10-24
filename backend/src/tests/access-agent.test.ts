@@ -156,6 +156,14 @@ describe('client assignment expiry and guest agent security', () => {
   it('downloads an admin JSON backup without live sessions and rejects clients', async () => {
     const harness = await createHarness();
     try {
+      await harness.db.withTransaction(({ data }) => {
+        const now = new Date().toISOString();
+        data.direct_login_tokens.push({
+          id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', user_id: harness.user.id,
+          token_hash: 'a'.repeat(64), expires_at: new Date(Date.now() + 60_000).toISOString(),
+          created_by: harness.user.id, created_at: now, used_at: null,
+        });
+      });
       const response = await harness.agent.get('/api/backup').buffer(true).parse((res, callback) => {
         const chunks: Buffer[] = [];
         res.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
@@ -164,9 +172,10 @@ describe('client assignment expiry and guest agent security', () => {
       expect(response.status).toBe(200);
       expect(response.headers['content-disposition']).toContain('attachment;');
       const backup = JSON.parse(response.body.toString('utf8'));
-      expect(backup.schemaVersion).toBe(3);
+      expect(backup.schemaVersion).toBe(4);
       expect(backup.oauth_states).toEqual([]);
       expect(backup.sessions).toEqual([]);
+      expect(backup.direct_login_tokens).toEqual([]);
       expect(backup.users.some((user: any) => user.username === 'admin')).toBe(true);
     } finally { await harness.close(); }
   });

@@ -15,23 +15,28 @@ const collections = [
   'users', 'sessions', 'api_tokens', 'servers', 'token_server_memberships', 'token_server_groups',
   'server_storage', 'server_networks', 'server_metrics', 'sync_jobs', 'audit_logs', 'app_settings',
 ];
+const v4AdditionalCollections = [
+  'client_server_access', 'server_agents', 'panel_api_keys', 'oauth_identities', 'oauth_states',
+  'proxmox_connections', 'proxmox_resources', 'provider_connections', 'provider_resources', 'direct_login_tokens',
+];
 
-function database(marker) {
+function database(marker, schemaVersion = 1) {
   const now = new Date().toISOString();
+  const versionedCollections = schemaVersion === 4 ? [...collections, ...v4AdditionalCollections] : collections;
   return {
-    schemaVersion: 1, createdAt: now, updatedAt: now, nextMetricId: 1, nextAuditId: 1,
-    ...Object.fromEntries(collections.map((name) => [name, []])),
+    schemaVersion, createdAt: now, updatedAt: now, nextMetricId: 1, nextAuditId: 1,
+    ...Object.fromEntries(versionedCollections.map((name) => [name, []])),
     app_settings: [{ key: 'marker', value: marker, updated_at: now }],
   };
 }
 
-async function fixture(t) {
+async function fixture(t, schemaVersion = 1) {
   const directory = await mkdtemp(path.join(tmpdir(), 'cerdasnet-json-scripts-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const databaseFile = path.join(directory, 'data', 'database.json');
   const backupDir = path.join(directory, 'backups');
   await mkdir(path.dirname(databaseFile), { recursive: true });
-  await writeFile(databaseFile, `${JSON.stringify(database('original'), null, 2)}\n`, { mode: 0o600 });
+  await writeFile(databaseFile, `${JSON.stringify(database('original', schemaVersion), null, 2)}\n`, { mode: 0o600 });
   const env = {
     ...process.env, DATA_FILE: databaseFile, BACKUP_DIR: backupDir,
     APP_STOPPED: 'YES', RESTORE_CONFIRM: 'YES',
@@ -56,6 +61,15 @@ test('JSON backup writes a verified copy, checksum, and restrictive permissions'
   assert.match(checksum, /^[a-f0-9]{64} {2}/);
   assert.equal((await stat(archive)).mode & 0o777, 0o600);
   assert.equal((await stat(`${archive}.sha256`)).mode & 0o777, 0o600);
+});
+
+test('JSON backup accepts the schema v4 provider and direct-login collections', async (t) => {
+  const { backupDir, env } = await fixture(t, 4);
+  await execFileAsync(process.execPath, [backupScript], { env });
+  const archive = path.join(backupDir, (await backupFiles(backupDir))[0]);
+  const stored = JSON.parse(await readFile(archive, 'utf8'));
+  assert.equal(stored.schemaVersion, 4);
+  for (const name of v4AdditionalCollections) assert.ok(Array.isArray(stored[name]), `${name} must be preserved`);
 });
 
 test('JSON restore enforces guards, creates a safety backup, and restores the selected snapshot', async (t) => {
