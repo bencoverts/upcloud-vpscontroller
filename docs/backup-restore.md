@@ -94,7 +94,7 @@ curl --fail http://127.0.0.1:3000/health/ready
 
 ## Verifikasi setelah restore
 
-- `schemaVersion` adalah versi yang didukung aplikasi (saat ini `3`; restore v1/v2 divalidasi untuk migrasi oleh aplikasi); koleksi users, client access, scoped API keys, OAuth identities, koneksi Proxmox, servers, tokens, jobs, dan audit dapat dibaca aplikasi.
+- `schemaVersion` adalah versi yang didukung aplikasi (saat ini `4`; archive v1/v2/v3 divalidasi untuk migrasi oleh aplikasi); koleksi users, client access, scoped API keys, OAuth identities, koneksi Proxmox, fondasi koneksi provider, servers, tokens, jobs, dan audit dapat dibaca aplikasi. Sesi, OAuth state, dan token direct-login tidak disertakan dalam backup API.
 - Admin dapat login; session lama yang masih valid harus ditinjau/dicabut sesuai insiden.
 - Token status awal mungkin `unknown` sampai test/sync; jangan menganggap valid hanya karena ciphertext berhasil direstore.
 - UUID server tidak terduplikasi dan relasi grup maksimal dua slot tetap utuh.

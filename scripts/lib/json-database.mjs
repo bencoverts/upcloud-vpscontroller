@@ -18,14 +18,19 @@ const v3Collections = [
   ...v2Collections.slice(0, 5), 'panel_api_keys', 'oauth_identities', 'oauth_states',
   'proxmox_connections', 'proxmox_resources', ...v2Collections.slice(5),
 ];
+const v4Collections = [
+  ...v3Collections.slice(0, 10), 'provider_connections', 'provider_resources',
+  'direct_login_tokens', ...v3Collections.slice(10),
+];
 
 export function validateDatabase(value, source = 'JSON database') {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${source} must contain an object.`);
-  if (![1, 2, 3].includes(value.schemaVersion)) throw new Error(`${source} has an unsupported schemaVersion.`);
+  if (![1, 2, 3, 4].includes(value.schemaVersion)) throw new Error(`${source} has an unsupported schemaVersion.`);
   if (typeof value.createdAt !== 'string' || typeof value.updatedAt !== 'string') throw new Error(`${source} timestamps are missing.`);
   if (!Number.isInteger(value.nextMetricId) || value.nextMetricId < 1
     || !Number.isInteger(value.nextAuditId) || value.nextAuditId < 1) throw new Error(`${source} ID counters are invalid.`);
-  const collections = value.schemaVersion === 3 ? v3Collections : value.schemaVersion === 2 ? v2Collections : baseCollections;
+  const collections = value.schemaVersion === 4 ? v4Collections
+    : value.schemaVersion === 3 ? v3Collections : value.schemaVersion === 2 ? v2Collections : baseCollections;
   for (const name of collections) {
     if (!Array.isArray(value[name])) throw new Error(`${source} collection ${name} must be an array.`);
   }

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createDatabase } from '../db/index.js';
+import { assertDatabaseData, createEmptyDatabase, migrateDatabaseData } from '../db/types.js';
 import { createHarness, testConfig } from './helpers.js';
 
 describe('local JSON database', () => {
@@ -17,10 +18,35 @@ describe('local JSON database', () => {
       expect(await readFile(harness.db.filePath, 'utf8')).toBe(before);
       expect(await harness.db.read((data) => data.app_settings)).toHaveLength(6);
       const stored = JSON.parse(before);
-      expect(stored.schemaVersion).toBe(3);
+      expect(stored.schemaVersion).toBe(4);
       expect(stored.users).toHaveLength(1);
       expect(stored.sessions).toHaveLength(1);
     } finally { await harness.close(); }
+  });
+
+  it('migrates schema v3 and validates provider and direct-login relations', () => {
+    const legacy = structuredClone(createEmptyDatabase({})) as any;
+    legacy.schemaVersion = 3;
+    delete legacy.provider_connections;
+    delete legacy.provider_resources;
+    delete legacy.direct_login_tokens;
+
+    const migrated = migrateDatabaseData(legacy);
+    expect(migrated.migrated).toBe(true);
+    expect(migrated.data.schemaVersion).toBe(4);
+    expect(migrated.data.provider_connections).toEqual([]);
+    expect(migrated.data.provider_resources).toEqual([]);
+    expect(migrated.data.direct_login_tokens).toEqual([]);
+    expect(migrated.data.schemaVersion).toBe(4);
+
+    expect(() => assertDatabaseData({
+      ...migrated.data,
+      provider_resources: [{ id: 'resource-1', connection_id: 'missing', external_id: 'external-1' }],
+    })).toThrow(/provider resource references a missing connection/);
+    expect(() => assertDatabaseData({
+      ...migrated.data,
+      direct_login_tokens: [{ id: 'login-1', user_id: 'missing', created_by: 'also-missing', token_hash: 'a'.repeat(64) }],
+    })).toThrow(/direct-login token references a missing user/);
   });
 
   it('reopens persisted data and prevents a second process from using the same file', async () => {

@@ -31,6 +31,23 @@ export type OauthIdentityRecord = {
 export type OauthStateRecord = {
   id: string; state_hash: string; verifier: string; nonce: string; expires_at: string; created_at: string;
 };
+export type CloudProvider = 'digitalocean' | 'ovh' | 'contabo' | 'pterodactyl';
+export type ProviderConnectionRecord = {
+  id: string; provider: CloudProvider; name: string; enabled: boolean;
+  ciphertext: string; iv: string; auth_tag: string; key_version: number;
+  metadata: Record<string, unknown>; connection_status: 'unknown' | 'online' | 'offline';
+  last_error_message: string | null; last_synced_at: string | null; created_at: string; updated_at: string;
+};
+export type ProviderResourceRecord = {
+  id: string; connection_id: string; external_id: string; name: string; state: string;
+  region: string | null; ipv4: string[]; ipv6: string[]; cores: number | null;
+  memory_mib: number | null; disk_gib: number | null; plan: string | null; os_name: string | null;
+  details: Record<string, unknown>; synced_at: string;
+};
+export type DirectLoginTokenRecord = {
+  id: string; user_id: string; token_hash: string; expires_at: string;
+  created_by: string; created_at: string; used_at: string | null;
+};
 export type ProxmoxConnectionRecord = {
   id: string; name: string; base_url: string; token_id: string;
   ciphertext: string; iv: string; auth_tag: string; key_version: number; enabled: boolean;
@@ -89,18 +106,21 @@ export type AuditLogRecord = {
 export type AppSettingRecord = { key: string; value: unknown; updated_at: string };
 
 export type DatabaseData = {
-  schemaVersion: 3; createdAt: string; updatedAt: string; nextMetricId: number; nextAuditId: number;
+  schemaVersion: 4; createdAt: string; updatedAt: string; nextMetricId: number; nextAuditId: number;
   users: UserRecord[]; sessions: SessionRecord[]; client_server_access: ClientAccessRecord[];
   server_agents: ServerAgentRecord[]; api_tokens: ApiTokenRecord[]; panel_api_keys: PanelApiKeyRecord[];
   oauth_identities: OauthIdentityRecord[]; oauth_states: OauthStateRecord[];
   proxmox_connections: ProxmoxConnectionRecord[]; proxmox_resources: ProxmoxResourceRecord[];
+  provider_connections: ProviderConnectionRecord[]; provider_resources: ProviderResourceRecord[];
+  direct_login_tokens: DirectLoginTokenRecord[];
   servers: ServerRecord[]; token_server_memberships: MembershipRecord[]; token_server_groups: ServerGroupRecord[];
   server_storage: StorageRecord[]; server_networks: NetworkRecord[]; server_metrics: MetricRecord[];
   sync_jobs: SyncJobRecord[]; audit_logs: AuditLogRecord[]; app_settings: AppSettingRecord[];
 };
 export const collectionNames = [
   'users', 'sessions', 'client_server_access', 'server_agents', 'api_tokens', 'panel_api_keys',
-  'oauth_identities', 'oauth_states', 'proxmox_connections', 'proxmox_resources', 'servers',
+  'oauth_identities', 'oauth_states', 'proxmox_connections', 'proxmox_resources',
+  'provider_connections', 'provider_resources', 'direct_login_tokens', 'servers',
   'token_server_memberships', 'token_server_groups', 'server_storage', 'server_networks',
   'server_metrics', 'sync_jobs', 'audit_logs', 'app_settings',
 ] as const satisfies ReadonlyArray<keyof DatabaseData>;
@@ -109,9 +129,10 @@ export const activeJobStatuses = new Set(['queued', 'running', 'verifying']);
 export function createEmptyDatabase(settings: Record<string, unknown>): DatabaseData {
   const now = new Date().toISOString();
   return {
-    schemaVersion: 3, createdAt: now, updatedAt: now, nextMetricId: 1, nextAuditId: 1,
+    schemaVersion: 4, createdAt: now, updatedAt: now, nextMetricId: 1, nextAuditId: 1,
     users: [], sessions: [], client_server_access: [], server_agents: [], api_tokens: [], panel_api_keys: [],
-    oauth_identities: [], oauth_states: [], proxmox_connections: [], proxmox_resources: [], servers: [],
+    oauth_identities: [], oauth_states: [], proxmox_connections: [], proxmox_resources: [],
+    provider_connections: [], provider_resources: [], direct_login_tokens: [], servers: [],
     token_server_memberships: [], token_server_groups: [], server_storage: [], server_networks: [],
     server_metrics: [], sync_jobs: [], audit_logs: [],
     app_settings: Object.entries(settings).map(([key, value]) => ({ key, value, updated_at: now })),
@@ -129,7 +150,7 @@ function migrateLegacy(value: Record<string, unknown>): DatabaseData {
   const legacy = value as unknown as Omit<DatabaseData, 'schemaVersion'> & { schemaVersion: number };
   const now = new Date().toISOString();
   const migrated = {
-    ...legacy, schemaVersion: 3,
+    ...legacy, schemaVersion: 4,
     users: legacy.users.map((user) => ({
       ...user, role: (user.role as string) === 'viewer' ? 'client' : user.role,
       email: user.email ?? null, display_name: user.display_name ?? null,
@@ -137,7 +158,8 @@ function migrateLegacy(value: Record<string, unknown>): DatabaseData {
     client_server_access: legacy.client_server_access ?? [], server_agents: legacy.server_agents ?? [],
     panel_api_keys: legacy.panel_api_keys ?? [], oauth_identities: legacy.oauth_identities ?? [],
     oauth_states: legacy.oauth_states ?? [], proxmox_connections: legacy.proxmox_connections ?? [],
-    proxmox_resources: legacy.proxmox_resources ?? [],
+    proxmox_resources: legacy.proxmox_resources ?? [], provider_connections: legacy.provider_connections ?? [],
+    provider_resources: legacy.provider_resources ?? [], direct_login_tokens: legacy.direct_login_tokens ?? [],
     server_metrics: legacy.server_metrics.map((metric) => ({
       ...metric, filesystem_used_bytes: metric.filesystem_used_bytes ?? null,
       filesystem_total_bytes: metric.filesystem_total_bytes ?? null, memory_used_bytes: metric.memory_used_bytes ?? null,
@@ -152,17 +174,17 @@ function migrateLegacy(value: Record<string, unknown>): DatabaseData {
 export function migrateDatabaseData(value: unknown): { data: DatabaseData; migrated: boolean } {
   if (!value || typeof value !== 'object') throw new Error('JSON database must contain an object.');
   const candidate = value as Record<string, unknown>;
-  if (candidate.schemaVersion === 3) {
+  if (candidate.schemaVersion === 4) {
     assertDatabaseData(candidate);
     return { data: candidate as DatabaseData, migrated: false };
   }
-  if (![1, 2].includes(Number(candidate.schemaVersion))) throw new Error('Unsupported JSON database schemaVersion; expected 1, 2, or 3.');
+  if (![1, 2, 3].includes(Number(candidate.schemaVersion))) throw new Error('Unsupported JSON database schemaVersion; expected 1, 2, 3, or 4.');
   return { data: migrateLegacy(candidate), migrated: true };
 }
 export function assertDatabaseData(value: unknown): asserts value is DatabaseData {
   if (!value || typeof value !== 'object') throw new Error('JSON database must contain an object.');
   const data = value as Partial<DatabaseData>;
-  if (data.schemaVersion !== 3) throw new Error('Unsupported JSON database schemaVersion; expected 3.');
+  if (data.schemaVersion !== 4) throw new Error('Unsupported JSON database schemaVersion; expected 4.');
   if (typeof data.createdAt !== 'string' || typeof data.updatedAt !== 'string') throw new Error('JSON database timestamps are missing.');
   if (!Number.isInteger(data.nextMetricId) || (data.nextMetricId ?? 0) < 1 || !Number.isInteger(data.nextAuditId) || (data.nextAuditId ?? 0) < 1) {
     throw new Error('JSON database ID counters are invalid.');
@@ -178,6 +200,9 @@ export function assertDatabaseData(value: unknown): asserts value is DatabaseDat
   unique(valid.oauth_identities, (row) => `${row.provider}:${row.subject}`, 'OAuth subject'); unique(valid.oauth_states, (row) => row.id, 'OAuth state');
   unique(valid.proxmox_connections, (row) => row.id, 'Proxmox connection'); unique(valid.proxmox_resources, (row) => row.id, 'Proxmox resource');
   unique(valid.proxmox_resources, (row) => `${row.connection_id}:${row.type}:${row.node}:${row.vmid}`, 'Proxmox resource identity');
+  unique(valid.provider_connections, (row) => row.id, 'provider connection'); unique(valid.provider_resources, (row) => row.id, 'provider resource');
+  unique(valid.provider_resources, (row) => `${row.connection_id}:${row.external_id}`, 'provider resource identity');
+  unique(valid.direct_login_tokens, (row) => row.id, 'direct-login token'); unique(valid.direct_login_tokens, (row) => row.token_hash, 'direct-login token hash');
   unique(valid.servers, (row) => row.uuid, 'server UUID');
   unique(valid.token_server_memberships, (row) => `${row.token_id}:${row.server_uuid}`, 'membership');
   unique(valid.token_server_groups, (row) => `${row.token_id}:${row.server_uuid}`, 'server group');
@@ -199,6 +224,9 @@ export function assertDatabaseData(value: unknown): asserts value is DatabaseDat
   for (const collection of [valid.server_storage, valid.server_networks, valid.server_metrics]) for (const row of collection) if (!servers.has(row.server_uuid)) throw new Error('JSON database server relation references a missing server.');
   const connections = new Set(valid.proxmox_connections.map((row) => row.id));
   for (const row of valid.proxmox_resources) if (!connections.has(row.connection_id)) throw new Error('JSON database Proxmox resource references a missing connection.');
+  const providerConnections = new Set(valid.provider_connections.map((row) => row.id));
+  for (const row of valid.provider_resources) if (!providerConnections.has(row.connection_id)) throw new Error('JSON database provider resource references a missing connection.');
+  for (const row of valid.direct_login_tokens) if (!users.has(row.user_id) || !users.has(row.created_by)) throw new Error('JSON database direct-login token references a missing user.');
   const activeTokens = new Set<string>(); const activeServers = new Set<string>();
   for (const job of valid.sync_jobs) {
     if (!activeJobStatuses.has(job.status)) continue;
