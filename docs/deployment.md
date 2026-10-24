@@ -4,7 +4,7 @@ Dokumen ini adalah panduan; tidak ada perintah dalam repositori yang mengubah ng
 
 ## 1. Persiapan Ubuntu
 
-Gunakan Ubuntu 24.04 LTS atau versi yang didukung, Node.js 22 untuk development, Docker Engine + Compose v2 untuk deployment, DNS `A/AAAA` ke host, dan TLS pada reverse proxy.
+Gunakan Ubuntu 24.04 LTS atau versi yang didukung, Docker Engine + Compose v2 untuk deployment, DNS `A/AAAA` ke host, dan TLS pada reverse proxy. Node.js 22 diperlukan untuk development serta menjalankan tooling backup/restore Node.js di host; runtime aplikasi itu sendiri sudah tersedia di dalam container.
 
 Prinsip jaringan:
 
@@ -100,7 +100,7 @@ Jalankan validasi konfigurasi yang disediakan control panel/nginx sebelum reload
 ## 5. Update
 
 ```bash
-COMPOSE=1 ./scripts/backup.sh
+COMPOSE=1 node scripts/backup.mjs
 docker compose build app
 docker compose up -d app
 docker compose ps
