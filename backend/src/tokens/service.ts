@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import type { Database, Queryable } from '../db/index.js';
+import type { Database } from '../db/index.js';
+import { activeJobStatuses } from '../db/types.js';
+import type { ApiTokenRecord, DatabaseData } from '../db/types.js';
 import { AppError } from '../lib/errors.js';
 import { TokenCipher, maskUpCloudToken } from '../lib/crypto.js';
 import type { UpCloudGatewayFactory } from '../upcloud/factory.js';
@@ -7,12 +9,8 @@ import { UpCloudApiError } from '../upcloud/client.js';
 import type { UpCloudServerSummary } from '../upcloud/types.js';
 import { deactivateMissingMemberships, persistServer, upsertMembership } from '../servers/catalog.js';
 
-export type TokenRecord = {
-  id: string; name: string; ciphertext: Buffer; iv: Buffer; auth_tag: Buffer; key_version: number;
-  fingerprint: string; masked_token: string; enabled: boolean; validation_status: string;
-  connection_status: string; expires_at: Date | null; expires_at_verified: boolean;
-  last_error_code: string | null; last_error_message: string | null; last_validated_at: Date | null;
-  last_used_at: Date | null; last_sync_at: Date | null; created_at: Date; updated_at: Date;
+export type TokenRecord = Omit<ApiTokenRecord, 'ciphertext' | 'iv' | 'auth_tag'> & {
+  ciphertext: Buffer; iv: Buffer; auth_tag: Buffer;
 };
 
 export type TokenInput = {
@@ -21,6 +19,13 @@ export type TokenInput = {
   expiresAt?: string | null;
   selectedServerUuids: string[];
 };
+
+function hydrate(record: ApiTokenRecord): TokenRecord {
+  return {
+    ...record, ciphertext: Buffer.from(record.ciphertext, 'base64'),
+    iv: Buffer.from(record.iv, 'base64'), auth_tag: Buffer.from(record.auth_tag, 'base64'),
+  };
+}
 
 export class TokenService {
   constructor(
@@ -38,24 +43,28 @@ export class TokenService {
 
   async create(input: TokenInput) {
     const fingerprint = this.cipher.fingerprint(input.token);
-    const duplicate = await this.db.query<{ id: string }>('SELECT id FROM api_tokens WHERE fingerprint=$1', [fingerprint]);
-    if (duplicate.rows[0]) throw new AppError(409, 'CONFLICT', 'Token UpCloud ini sudah terdaftar.');
+    if (await this.db.read((data) => data.api_tokens.some((row) => row.fingerprint === fingerprint))) {
+      throw new AppError(409, 'CONFLICT', 'Token UpCloud ini sudah terdaftar.');
+    }
     const validated = await this.validate(input.token);
     this.assertSelection(input.selectedServerUuids, validated.servers);
     const id = randomUUID();
     const encrypted = this.cipher.encrypt(input.token, id);
-    await this.db.withTransaction(async (query) => {
-      await query.query(
-        `INSERT INTO api_tokens(
-          id,name,ciphertext,iv,auth_tag,key_version,fingerprint,masked_token,enabled,
-          validation_status,connection_status,expires_at,expires_at_verified,
-          last_validated_at,last_used_at,last_sync_at
-        ) VALUES ($1,$2,$3,$4,$5,1,$6,$7,TRUE,'valid','online',$8,FALSE,now(),now(),now())`,
-        [id, input.name, encrypted.ciphertext, encrypted.iv, encrypted.authTag, fingerprint,
-          maskUpCloudToken(input.token), input.expiresAt ?? null],
-      );
-      await this.persistDiscoveredList(query, id, validated.servers);
-      await this.replaceSelection(query, id, input.selectedServerUuids);
+    await this.db.withTransaction(({ data }) => {
+      if (data.api_tokens.some((row) => row.fingerprint === fingerprint)) {
+        throw new AppError(409, 'CONFLICT', 'Token UpCloud ini sudah terdaftar.');
+      }
+      const now = new Date().toISOString();
+      data.api_tokens.push({
+        id, name: input.name, ciphertext: encrypted.ciphertext.toString('base64'),
+        iv: encrypted.iv.toString('base64'), auth_tag: encrypted.authTag.toString('base64'),
+        key_version: 1, fingerprint, masked_token: maskUpCloudToken(input.token), enabled: true,
+        validation_status: 'valid', connection_status: 'online', expires_at: input.expiresAt ?? null,
+        expires_at_verified: false, last_error_code: null, last_error_message: null,
+        last_validated_at: now, last_used_at: now, last_sync_at: now, created_at: now, updated_at: now,
+      });
+      this.persistDiscoveredList(data, id, validated.servers);
+      this.replaceSelection(data, id, input.selectedServerUuids);
     });
     return this.get(id);
   }
@@ -64,45 +73,53 @@ export class TokenService {
     await this.requireRecord(id);
     await this.assertNoActiveJob(id);
     const fingerprint = this.cipher.fingerprint(input.token);
-    const duplicate = await this.db.query<{ id: string }>('SELECT id FROM api_tokens WHERE fingerprint=$1 AND id<>$2', [fingerprint, id]);
-    if (duplicate.rows[0]) throw new AppError(409, 'CONFLICT', 'Token pengganti sudah digunakan oleh grup lain.');
+    if (await this.db.read((data) => data.api_tokens.some((row) => row.fingerprint === fingerprint && row.id !== id))) {
+      throw new AppError(409, 'CONFLICT', 'Token pengganti sudah digunakan oleh grup lain.');
+    }
     const validated = await this.validate(input.token);
     this.assertSelection(input.selectedServerUuids, validated.servers);
     const encrypted = this.cipher.encrypt(input.token, id);
-    await this.db.withTransaction(async (query) => {
-      await query.query(
-        `UPDATE api_tokens SET ciphertext=$2,iv=$3,auth_tag=$4,key_version=1,fingerprint=$5,
-          masked_token=$6,expires_at=$7,expires_at_verified=FALSE,validation_status='valid',
-          connection_status='online',last_error_code=NULL,last_error_message=NULL,
-          last_validated_at=now(),last_used_at=now(),last_sync_at=now(),updated_at=now() WHERE id=$1`,
-        [id, encrypted.ciphertext, encrypted.iv, encrypted.authTag, fingerprint,
-          maskUpCloudToken(input.token), input.expiresAt ?? null],
-      );
-      await this.persistDiscoveredList(query, id, validated.servers);
-      await this.replaceSelection(query, id, input.selectedServerUuids);
+    await this.db.withTransaction(({ data }) => {
+      const token = data.api_tokens.find((row) => row.id === id);
+      if (!token) throw new AppError(404, 'NOT_FOUND', 'Grup API token tidak ditemukan.');
+      this.assertNoActiveJobInData(data, id);
+      if (data.api_tokens.some((row) => row.fingerprint === fingerprint && row.id !== id)) {
+        throw new AppError(409, 'CONFLICT', 'Token pengganti sudah digunakan oleh grup lain.');
+      }
+      const now = new Date().toISOString();
+      Object.assign(token, {
+        ciphertext: encrypted.ciphertext.toString('base64'), iv: encrypted.iv.toString('base64'),
+        auth_tag: encrypted.authTag.toString('base64'), key_version: 1, fingerprint,
+        masked_token: maskUpCloudToken(input.token), expires_at: input.expiresAt ?? null,
+        expires_at_verified: false, validation_status: 'valid' as const, connection_status: 'online' as const,
+        last_error_code: null, last_error_message: null, last_validated_at: now,
+        last_used_at: now, last_sync_at: now, updated_at: now,
+      });
+      this.persistDiscoveredList(data, id, validated.servers);
+      this.replaceSelection(data, id, input.selectedServerUuids);
     });
     return this.get(id);
   }
 
   async list() {
-    const tokens = await this.db.query<any>(
-      `SELECT t.id,t.name,t.masked_token,t.enabled,t.validation_status,t.connection_status,
-        t.expires_at,t.expires_at_verified,t.last_error_code,t.last_error_message,
-        t.last_validated_at,t.last_used_at,t.last_sync_at,t.created_at,t.updated_at,
-        (SELECT COUNT(*)::text FROM token_server_memberships m WHERE m.token_id=t.id AND m.active=TRUE) AS server_count
-       FROM api_tokens t ORDER BY t.created_at DESC`);
-    const selected = await this.db.query<any>(
-      `SELECT g.token_id,g.server_uuid,g.slot,s.title,s.state,m.active
-       FROM token_server_groups g JOIN servers s ON s.uuid=g.server_uuid
-       JOIN token_server_memberships m ON m.token_id=g.token_id AND m.server_uuid=g.server_uuid
-       ORDER BY g.token_id,g.slot`);
-    const activeJobs = await this.db.query<any>(`SELECT id,token_id,job_type,status FROM sync_jobs
-      WHERE token_id IS NOT NULL AND status IN ('queued','running','verifying') ORDER BY created_at DESC`);
-    return tokens.rows.map((token) => this.toDto(
-      token,
-      selected.rows.filter((server) => server.token_id === token.id),
-      activeJobs.rows.find((job) => job.token_id === token.id),
-    ));
+    return this.db.read((data) => {
+      const tokens = [...data.api_tokens].sort((left, right) => right.created_at.localeCompare(left.created_at));
+      return tokens.map((token) => {
+        const selected = data.token_server_groups
+          .filter((group) => group.token_id === token.id)
+          .sort((left, right) => left.slot - right.slot)
+          .flatMap((group) => {
+            const server = data.servers.find((row) => row.uuid === group.server_uuid);
+            const membership = data.token_server_memberships.find((row) => row.token_id === token.id && row.server_uuid === group.server_uuid);
+            return server && membership ? [{ ...group, title: server.title, state: server.state, active: membership.active }] : [];
+          });
+        const activeJob = [...data.sync_jobs]
+          .filter((job) => job.token_id === token.id && activeJobStatuses.has(job.status))
+          .sort((left, right) => right.created_at.localeCompare(left.created_at))[0];
+        const serverCount = data.token_server_memberships.filter((row) => row.token_id === token.id && row.active).length;
+        return this.toDto(token, serverCount, selected, activeJob);
+      });
+    });
   }
 
   async get(id: string) {
@@ -113,61 +130,77 @@ export class TokenService {
   }
 
   async discoveredServers(id: string) {
-    await this.requireRecord(id);
-    const result = await this.db.query<any>(
-      `SELECT s.uuid,s.title,s.state,s.zone,s.core_number,s.memory_mib,g.slot
-       FROM token_server_memberships m JOIN servers s ON s.uuid=m.server_uuid
-       LEFT JOIN token_server_groups g ON g.token_id=m.token_id AND g.server_uuid=m.server_uuid
-       WHERE m.token_id=$1 AND m.active=TRUE ORDER BY lower(s.title),s.uuid`, [id]);
-    return result.rows.map((server) => ({
-      uuid: server.uuid, title: server.title, state: server.state, zone: server.zone,
-      coreNumber: Number(server.core_number), memoryMib: Number(server.memory_mib),
-      selectedSlot: server.slot === null ? null : Number(server.slot),
-    }));
+    return this.db.read((data) => {
+      if (!data.api_tokens.some((row) => row.id === id)) throw new AppError(404, 'NOT_FOUND', 'Grup API token tidak ditemukan.');
+      return data.token_server_memberships
+        .filter((membership) => membership.token_id === id && membership.active)
+        .flatMap((membership) => {
+          const server = data.servers.find((row) => row.uuid === membership.server_uuid);
+          if (!server) return [];
+          const group = data.token_server_groups.find((row) => row.token_id === id && row.server_uuid === server.uuid);
+          return [{
+            uuid: server.uuid, title: server.title, state: server.state, zone: server.zone,
+            coreNumber: Number(server.core_number), memoryMib: Number(server.memory_mib),
+            selectedSlot: group?.slot ?? null,
+          }];
+        })
+        .sort((left, right) => left.title.toLowerCase().localeCompare(right.title.toLowerCase()) || left.uuid.localeCompare(right.uuid));
+    });
   }
 
   async update(id: string, input: { name: string; expiresAt?: string | null }) {
-    await this.requireRecord(id);
-    const hasExpiry = input.expiresAt !== undefined;
-    const result = await this.db.query(
-      `UPDATE api_tokens SET name=$2,expires_at=CASE WHEN $3 THEN $4 ELSE expires_at END,
-        expires_at_verified=CASE WHEN $3 THEN FALSE ELSE expires_at_verified END,updated_at=now()
-       WHERE id=$1`, [id, input.name, hasExpiry, input.expiresAt ?? null]);
-    if (!result.rowCount) throw new AppError(404, 'NOT_FOUND', 'Grup API token tidak ditemukan.');
+    await this.db.withTransaction(({ data }) => {
+      const token = data.api_tokens.find((row) => row.id === id);
+      if (!token) throw new AppError(404, 'NOT_FOUND', 'Grup API token tidak ditemukan.');
+      token.name = input.name;
+      if (input.expiresAt !== undefined) {
+        token.expires_at = input.expiresAt;
+        token.expires_at_verified = false;
+      }
+      token.updated_at = new Date().toISOString();
+    });
     return this.get(id);
   }
 
   async setEnabled(id: string, enabled: boolean) {
-    if (!enabled) await this.assertNoActiveJob(id);
-    const result = await this.db.query(
-      `UPDATE api_tokens SET enabled=$2,connection_status=CASE WHEN $2 THEN 'unknown' ELSE 'offline' END,
-        updated_at=now() WHERE id=$1`, [id, enabled]);
-    if (!result.rowCount) throw new AppError(404, 'NOT_FOUND', 'Grup API token tidak ditemukan.');
+    await this.db.withTransaction(({ data }) => {
+      const token = data.api_tokens.find((row) => row.id === id);
+      if (!token) throw new AppError(404, 'NOT_FOUND', 'Grup API token tidak ditemukan.');
+      if (!enabled) this.assertNoActiveJobInData(data, id);
+      token.enabled = enabled;
+      token.connection_status = enabled ? 'unknown' : 'offline';
+      token.updated_at = new Date().toISOString();
+    });
     return this.get(id);
   }
 
   async setSelection(id: string, serverUuids: string[]) {
-    await this.requireRecord(id);
-    if (serverUuids.length > 0) {
-      const placeholders = serverUuids.map((_, index) => `$${index + 2}`).join(',');
-      const allowed = await this.db.query<{ server_uuid: string }>(
-        `SELECT server_uuid FROM token_server_memberships WHERE token_id=$1 AND active=TRUE AND server_uuid IN (${placeholders})`,
-        [id, ...serverUuids]);
-      if (allowed.rowCount !== new Set(serverUuids).size) {
+    if (serverUuids.length > 2 || new Set(serverUuids).size !== serverUuids.length) {
+      throw new AppError(400, 'BAD_REQUEST', 'Pilihan grup harus unik dan maksimal dua server.');
+    }
+    await this.db.withTransaction(({ data }) => {
+      if (!data.api_tokens.some((row) => row.id === id)) throw new AppError(404, 'NOT_FOUND', 'Grup API token tidak ditemukan.');
+      const selected = new Set(serverUuids);
+      const allowed = data.token_server_memberships.filter((row) => row.token_id === id && row.active && selected.has(row.server_uuid)).length;
+      if (allowed !== selected.size) {
         throw new AppError(400, 'BAD_REQUEST', 'Server pilihan harus termasuk server aktif yang ditemukan oleh token ini.');
       }
-    }
-    await this.db.withTransaction((query) => this.replaceSelection(query, id, serverUuids));
+      this.replaceSelection(data, id, serverUuids);
+    });
     return this.get(id);
   }
 
   async remove(id: string, confirmationName: string): Promise<void> {
-    const token = await this.requireRecord(id);
-    await this.assertNoActiveJob(id);
-    if (token.name !== confirmationName) {
-      throw new AppError(400, 'BAD_REQUEST', 'Nama konfirmasi tidak sama dengan nama grup token.');
-    }
-    await this.db.query('DELETE FROM api_tokens WHERE id=$1', [id]);
+    await this.db.withTransaction(({ data }) => {
+      const token = data.api_tokens.find((row) => row.id === id);
+      if (!token) throw new AppError(404, 'NOT_FOUND', 'Grup API token tidak ditemukan.');
+      this.assertNoActiveJobInData(data, id);
+      if (token.name !== confirmationName) throw new AppError(400, 'BAD_REQUEST', 'Nama konfirmasi tidak sama dengan nama grup token.');
+      data.api_tokens = data.api_tokens.filter((row) => row.id !== id);
+      data.token_server_memberships = data.token_server_memberships.filter((row) => row.token_id !== id);
+      data.token_server_groups = data.token_server_groups.filter((row) => row.token_id !== id);
+      for (const job of data.sync_jobs) if (job.token_id === id) job.token_id = null;
+    });
   }
 
   async test(id: string) {
@@ -182,32 +215,40 @@ export class TokenService {
     }
   }
 
+  private assertNoActiveJobInData(data: DatabaseData, id: string): void {
+    if (data.sync_jobs.some((job) => job.token_id === id && activeJobStatuses.has(job.status))) {
+      throw new AppError(409, 'CONFLICT', 'Token memiliki job aktif. Tunggu hingga selesai sebelum mengganti, menonaktifkan, atau menghapusnya.');
+    }
+  }
+
   private async assertNoActiveJob(id: string): Promise<void> {
-    const active = await this.db.query(
-      "SELECT id FROM sync_jobs WHERE token_id=$1 AND status IN ('queued','running','verifying') LIMIT 1", [id]);
-    if (active.rowCount) throw new AppError(409, 'CONFLICT', 'Token memiliki job aktif. Tunggu hingga selesai sebelum mengganti, menonaktifkan, atau menghapusnya.');
+    await this.db.read((data) => { this.assertNoActiveJobInData(data, id); });
   }
 
   async requireRecord(id: string): Promise<TokenRecord> {
-    const result = await this.db.query<TokenRecord>('SELECT * FROM api_tokens WHERE id=$1', [id]);
-    const token = result.rows[0];
+    const token = await this.db.read((data) => data.api_tokens.find((row) => row.id === id));
     if (!token) throw new AppError(404, 'NOT_FOUND', 'Grup API token tidak ditemukan.');
-    return token;
+    return hydrate(token);
   }
 
   async listEnabled(): Promise<TokenRecord[]> {
-    const result = await this.db.query<TokenRecord>('SELECT * FROM api_tokens WHERE enabled=TRUE ORDER BY created_at');
-    return result.rows;
+    const tokens = await this.db.read((data) => data.api_tokens
+      .filter((row) => row.enabled).sort((left, right) => left.created_at.localeCompare(right.created_at)));
+    return tokens.map(hydrate);
   }
 
   async bestForServer(serverUuid: string): Promise<TokenRecord> {
-    const result = await this.db.query<TokenRecord>(
-      `SELECT t.* FROM api_tokens t JOIN token_server_memberships m ON m.token_id=t.id
-       WHERE m.server_uuid=$1 AND m.active=TRUE AND t.enabled=TRUE
-       ORDER BY t.last_used_at DESC NULLS LAST,t.created_at LIMIT 1`, [serverUuid]);
-    const token = result.rows[0];
+    const token = await this.db.read((data) => {
+      const tokenIds = new Set(data.token_server_memberships
+        .filter((row) => row.server_uuid === serverUuid && row.active).map((row) => row.token_id));
+      return data.api_tokens.filter((row) => row.enabled && tokenIds.has(row.id)).sort((left, right) => {
+        const leftUsed = left.last_used_at ? new Date(left.last_used_at).getTime() : 0;
+        const rightUsed = right.last_used_at ? new Date(right.last_used_at).getTime() : 0;
+        return rightUsed - leftUsed || left.created_at.localeCompare(right.created_at);
+      })[0];
+    });
     if (!token) throw new AppError(409, 'CONFLICT', 'Tidak ada token aktif yang dapat mengakses server ini.');
-    return token;
+    return hydrate(token);
   }
 
   gatewayFor(token: TokenRecord) {
@@ -219,10 +260,17 @@ export class TokenService {
   }
 
   async markSuccess(id: string, synced = true): Promise<void> {
-    await this.db.query(
-      `UPDATE api_tokens SET validation_status='valid',connection_status='online',last_error_code=NULL,
-        last_error_message=NULL,last_validated_at=now(),last_used_at=now(),
-        last_sync_at=CASE WHEN $2 THEN now() ELSE last_sync_at END,updated_at=now() WHERE id=$1`, [id, synced]);
+    await this.db.withTransaction(({ data }) => {
+      const token = data.api_tokens.find((row) => row.id === id);
+      if (!token) return;
+      const now = new Date().toISOString();
+      Object.assign(token, {
+        validation_status: 'valid' as const, connection_status: 'online' as const,
+        last_error_code: null, last_error_message: null, last_validated_at: now,
+        last_used_at: now, updated_at: now,
+      });
+      if (synced) token.last_sync_at = now;
+    });
   }
 
   async markError(token: TokenRecord, error: unknown): Promise<void> {
@@ -233,43 +281,57 @@ export class TokenService {
     const authFailed = error instanceof AppError && (error.status === 401 || expired);
     const status = expired ? 'expired' : authFailed ? 'invalid' : token.validation_status;
     const message = error instanceof Error ? error.message.slice(0, 500) : 'Koneksi ke UpCloud gagal.';
-    await this.db.query(
-      `UPDATE api_tokens SET validation_status=$2,connection_status=$3,last_error_code=$4,
-        last_error_message=$5,last_used_at=now(),updated_at=now() WHERE id=$1`,
-      [token.id, status, authFailed ? 'offline' : 'degraded', String(upstreamCode).slice(0, 100), message]);
+    await this.db.withTransaction(({ data }) => {
+      const current = data.api_tokens.find((row) => row.id === token.id);
+      if (!current) return;
+      Object.assign(current, {
+        validation_status: status, connection_status: authFailed ? 'offline' as const : 'degraded' as const,
+        last_error_code: String(upstreamCode).slice(0, 100), last_error_message: message,
+        last_used_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      });
+    });
   }
 
-  private async persistDiscoveredList(query: Queryable, tokenId: string, servers: UpCloudServerSummary[]): Promise<void> {
+  private persistDiscoveredList(data: DatabaseData, tokenId: string, servers: UpCloudServerSummary[]): void {
     const unique = new Map(servers.map((server) => [server.uuid, server]));
     for (const server of unique.values()) {
-      await persistServer(query, server);
-      await upsertMembership(query, tokenId, server.uuid);
+      persistServer(data, server);
+      upsertMembership(data, tokenId, server.uuid);
     }
-    await deactivateMissingMemberships(query, tokenId, [...unique.keys()]);
+    deactivateMissingMemberships(data, tokenId, [...unique.keys()]);
   }
 
-  private async replaceSelection(query: Queryable, tokenId: string, serverUuids: string[]): Promise<void> {
-    await query.query('DELETE FROM token_server_groups WHERE token_id=$1', [tokenId]);
+  private replaceSelection(data: DatabaseData, tokenId: string, serverUuids: string[]): void {
+    if (serverUuids.length > 2) throw new AppError(400, 'BAD_REQUEST', 'Maksimal dua server dapat dipilih untuk satu grup.');
+    data.token_server_groups = data.token_server_groups.filter((row) => row.token_id !== tokenId);
     for (const [index, serverUuid] of serverUuids.entries()) {
-      await query.query('INSERT INTO token_server_groups(token_id,server_uuid,slot) VALUES ($1,$2,$3)', [tokenId, serverUuid, index + 1]);
+      data.token_server_groups.push({
+        token_id: tokenId, server_uuid: serverUuid, slot: (index + 1) as 1 | 2,
+        created_at: new Date().toISOString(),
+      });
     }
   }
 
   private assertSelection(selection: string[], servers: UpCloudServerSummary[]): void {
     const visible = new Set(servers.map((server) => server.uuid));
-    if (selection.some((uuid) => !visible.has(uuid))) {
-      throw new AppError(400, 'BAD_REQUEST', 'Pilihan grup berisi server yang tidak ditemukan oleh token ini.');
+    if (selection.length > 2 || new Set(selection).size !== selection.length || selection.some((uuid) => !visible.has(uuid))) {
+      throw new AppError(400, 'BAD_REQUEST', 'Pilihan grup harus unik, maksimal dua, dan berisi server yang ditemukan oleh token ini.');
     }
   }
 
-  private toDto(token: any, selected: any[], activeJob?: any) {
+  private toDto(
+    token: ApiTokenRecord,
+    serverCount: number,
+    selected: Array<{ server_uuid: string; title: string; state: string; slot: number; active: boolean }>,
+    activeJob?: { id: string; job_type: string; status: string },
+  ) {
     return {
       id: token.id, name: token.name, maskedToken: token.masked_token, enabled: token.enabled,
       validationStatus: token.validation_status, connectionStatus: token.connection_status,
       expiresAt: token.expires_at, expiryVerified: token.expires_at_verified,
       lastError: token.last_error_message ? { code: token.last_error_code, message: token.last_error_message } : null,
       lastValidatedAt: token.last_validated_at, lastUsedAt: token.last_used_at, lastSyncAt: token.last_sync_at,
-      createdAt: token.created_at, updatedAt: token.updated_at, serverCount: Number(token.server_count),
+      createdAt: token.created_at, updatedAt: token.updated_at, serverCount,
       activeJob: activeJob ? { id: activeJob.id, type: activeJob.job_type, status: activeJob.status } : null,
       selectedServers: selected.map((server) => ({
         uuid: server.server_uuid, title: server.title, state: server.state,

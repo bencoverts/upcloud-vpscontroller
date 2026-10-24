@@ -1,4 +1,4 @@
-import type { Queryable } from '../db/index.js';
+import type { Database, DatabaseTransaction } from '../db/index.js';
 
 export type AuditInput = {
   userId?: string | null;
@@ -12,12 +12,17 @@ export type AuditInput = {
   details?: Record<string, unknown>;
 };
 
-export async function writeAudit(query: Queryable, input: AuditInput): Promise<void> {
-  await query.query(
-    `INSERT INTO audit_logs(user_id, action, resource_type, resource_id, outcome, request_id, ip_address, user_agent, details)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)`,
-    [input.userId ?? null, input.action, input.resourceType, input.resourceId ?? null,
-      input.outcome ?? 'info', input.requestId ?? null, input.ipAddress?.slice(0, 100) ?? null,
-      input.userAgent?.slice(0, 300) ?? null, JSON.stringify(input.details ?? {})],
-  );
+export function appendAudit(transaction: DatabaseTransaction, input: AuditInput): void {
+  const { data } = transaction;
+  data.audit_logs.push({
+    id: String(data.nextAuditId++), user_id: input.userId ?? null,
+    action: input.action, resource_type: input.resourceType, resource_id: input.resourceId ?? null,
+    outcome: input.outcome ?? 'info', request_id: input.requestId ?? null,
+    ip_address: input.ipAddress?.slice(0, 100) ?? null, user_agent: input.userAgent?.slice(0, 300) ?? null,
+    details: input.details ?? {}, created_at: new Date().toISOString(),
+  });
+}
+
+export async function writeAudit(db: Database, input: AuditInput): Promise<void> {
+  await db.withTransaction((transaction) => { appendAudit(transaction, input); });
 }

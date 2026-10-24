@@ -29,9 +29,14 @@ describe('panel authentication and authorization', () => {
   it('allows viewers to read but rejects all viewer mutations', async () => {
     const harness = await createHarness();
     try {
-      await harness.db.query('INSERT INTO users(id,username,password_hash,role) VALUES ($1,$2,$3,$4)', [
-        randomUUID(), 'viewer', await hashPassword('ViewerPassword123!'), 'viewer',
-      ]);
+      const passwordHash = await hashPassword('ViewerPassword123!');
+      await harness.db.withTransaction(({ data }) => {
+        const now = new Date().toISOString();
+        data.users.push({
+          id: randomUUID(), username: 'viewer', password_hash: passwordHash, role: 'viewer',
+          disabled: false, created_at: now, updated_at: now,
+        });
+      });
       const viewer = supertest.agent(harness.app);
       const login = await viewer.post('/api/auth/login').send({ username: 'viewer', password: 'ViewerPassword123!' });
       expect(login.status).toBe(200);

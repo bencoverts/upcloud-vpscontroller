@@ -1,17 +1,17 @@
-# Deployment production
+# Deployment Node.js, PM2, dan production
 
-Dokumen ini adalah panduan; tidak ada perintah dalam repositori yang mengubah nginx, CloudPanel, firewall, atau service host secara otomatis. Tinjau setiap perubahan dengan administrator host.
+Dokumen ini adalah panduan; tidak ada perintah dalam repositori yang mengubah nginx, CloudPanel, firewall, PM2 startup, atau service host lain secara otomatis. Tinjau setiap perubahan dengan administrator host.
 
 ## 1. Persiapan Ubuntu
 
-Gunakan Ubuntu 24.04 LTS atau versi yang didukung, Docker Engine + Compose v2 untuk deployment, DNS `A/AAAA` ke host, dan TLS pada reverse proxy. Node.js 22 diperlukan untuk development serta menjalankan tooling backup/restore Node.js di host; runtime aplikasi itu sendiri sudah tersedia di dalam container.
+Gunakan Ubuntu 24.04 LTS atau versi yang didukung, Node.js `>=22.12`, npm, DNS `A/AAAA` ke host, dan TLS pada reverse proxy. PM2 bersifat opsional tetapi direkomendasikan untuk restart otomatis. PostgreSQL dan PostgreSQL client tools **tidak diperlukan**.
 
 Prinsip jaringan:
 
-- Internet → reverse proxy HTTPS (`443`) → `127.0.0.1:3000` → container app.
-- App → PostgreSQL melalui Docker bridge privat.
+- Internet → reverse proxy HTTPS (`443`) → `127.0.0.1:3000` → proses Node.js.
 - App → `https://api.upcloud.com` melalui HTTPS outbound.
-- Jangan expose PostgreSQL ke internet. Jangan expose port app pada `0.0.0.0` kecuali arsitektur firewall Anda memang memerlukannya.
+- App → `data/database.json` pada local filesystem.
+- Jangan expose port app pada `0.0.0.0` melalui firewall kecuali arsitektur Anda memang memerlukannya; proses listen pada semua interface, jadi batasi akses melalui reverse proxy/firewall.
 
 ## 2. Konfigurasi rahasia
 
@@ -19,42 +19,64 @@ Prinsip jaringan:
 cp .env.example .env
 chmod 600 .env
 openssl rand -hex 32
-openssl rand -base64 36
 ```
-
-Isi:
 
 | Variable | Keterangan |
 |---|---|
 | `APP_ORIGIN` | Origin publik lengkap, misalnya `https://vps-panel.example.com`; tanpa path |
-| `POSTGRES_DB`, `POSTGRES_USER` | Database dan role khusus panel |
-| `POSTGRES_PASSWORD` | Secret acak panjang |
+| `DATA_FILE` | Default `./data/database.json`; diselesaikan dari direktori proyek oleh `server.js` |
 | `TOKEN_ENCRYPTION_KEY` | 64 hex characters / 32 byte; simpan juga di secret manager |
-| `BIND_ADDRESS` | Default `127.0.0.1`; jangan ubah tanpa alasan |
+| `COOKIE_SECURE` | `true` untuk HTTPS production; `false` hanya untuk uji HTTP lokal |
 | `TRUST_PROXY` | Jumlah trusted proxy hop; biasanya `1` untuk reverse proxy lokal |
 | `METRICS_REFRESH_SECONDS` | Default/saran `300`; daily summary tidak menjamin berubah lebih sering |
 
-Jangan commit `.env`. Jangan memasukkan UpCloud token atau permanent `ADMIN_PASSWORD` ke file ini. Rotasi `TOKEN_ENCRYPTION_KEY` memerlukan migrasi ciphertext yang disengaja; menggantinya begitu saja membuat token lama tidak dapat didekripsi.
+`server.js`, bootstrap admin, dan backup/restore membaca `.env` tanpa menimpa environment yang sudah diset. Jangan commit `.env`. Jangan memasukkan UpCloud token atau permanent `ADMIN_PASSWORD` ke file ini. Rotasi `TOKEN_ENCRYPTION_KEY` memerlukan migrasi ciphertext yang disengaja; menggantinya begitu saja membuat token lama tidak dapat didekripsi.
 
-## 3. Start dan bootstrap
+## 3. Install, build, dan bootstrap
 
 ```bash
-docker compose up --build -d
-docker compose ps
-docker compose logs --tail=100 app
+npm ci
+npm --prefix backend ci
+npm --prefix frontend ci
+npm run build
+
+read -rp "Admin username: " ADMIN_USERNAME
+read -rsp "Admin password: " ADMIN_PASSWORD; echo
+export ADMIN_USERNAME ADMIN_PASSWORD
+npm run bootstrap:admin
+unset ADMIN_USERNAME ADMIN_PASSWORD
+```
+
+Bootstrap gagal jika user sudah ada; tidak ada default admin/password. Database beserta direktori induknya dibuat otomatis dengan permission ketat.
+
+## 4. Start dengan Node.js atau PM2
+
+Menjalankan aplikasi secara langsung:
+
+```bash
+node server.js
+curl --fail http://127.0.0.1:3000/health/live
 curl --fail http://127.0.0.1:3000/health/ready
 ```
 
-Bootstrap admin satu kali menggunakan input interaktif seperti di README. Hapus variable shell setelahnya. Bootstrap gagal jika user sudah ada; tidak ada default admin/password.
+Menjalankan dengan PM2:
+
+```bash
+pm2 start ecosystem.config.cjs
+pm2 status
+pm2 logs cerdasnet-vps-control
+```
+
+`ecosystem.config.cjs` menetapkan `instances: 1` dan `exec_mode: 'fork'`. **Jangan gunakan cluster mode atau beberapa proses pada file JSON yang sama.** Aplikasi juga membuat `DATA_FILE.lock` dan menolak proses kedua. Jika proses mati paksa, stale lock dengan PID yang sudah tidak berjalan dapat dipulihkan pada start berikutnya; jangan menghapus lock ketika PID masih hidup.
 
 Health endpoints:
 
 - `GET /health/live`: proses HTTP merespons.
-- `GET /health/ready`: query PostgreSQL berhasil.
+- `GET /health/ready`: file database dapat diakses; respons menyertakan `storage: "json"`.
 
-Migrasi berjalan sebelum HTTP listen dan memakai PostgreSQL advisory transaction lock. Job `queued/running/verifying` yang terputus karena restart proses ditandai `failed`; power job tidak diulang otomatis.
+Database dibuka dan divalidasi sebelum HTTP listen. Setiap transaksi memakai draft terisolasi, diserialkan dalam proses, lalu ditulis ke temporary file + `fsync` + atomic rename. Job `queued/running/verifying` yang terputus karena restart proses ditandai `failed`; power job tidak diulang otomatis.
 
-## 4. Reverse proxy / CloudPanel
+## 5. Reverse proxy / CloudPanel
 
 Di CloudPanel, gunakan site/reverse proxy yang menargetkan `http://127.0.0.1:3000`, aktifkan TLS, dan pertahankan konfigurasi host lain. Pastikan `APP_ORIGIN` sama persis dengan origin HTTPS publik.
 
@@ -97,32 +119,55 @@ Jalankan validasi konfigurasi yang disediakan control panel/nginx sebelum reload
 
 `TRUST_PROXY=1` sesuai satu reverse proxy lokal. Jika ada CDN tambahan, hitung trusted hops dengan benar; jangan memakai trust proxy berlebihan karena memengaruhi IP rate limit/audit.
 
-## 5. Update
+## 6. Update aplikasi
 
 ```bash
-COMPOSE=1 node scripts/backup.mjs
-docker compose build app
-docker compose up -d app
-docker compose ps
+node scripts/backup.mjs
+npm ci
+npm --prefix backend ci
+npm --prefix frontend ci
+npm run build
+pm2 restart cerdasnet-vps-control
 curl --fail http://127.0.0.1:3000/health/ready
 ```
 
-Migrasi kompatibel diterapkan saat startup. Untuk perubahan destruktif, review migrasi dan lakukan restore drill pada staging terlebih dahulu. Jangan menguji power/restart recovery pada VPS production.
+Tinjau perubahan struktur `schemaVersion` sebelum update. Lakukan restore drill pada staging; jangan menguji power/restart recovery pada VPS production.
 
-## 6. Operasional
+## 7. Docker Compose opsional
 
-- `docker compose logs -f app` — log aman tanpa UpCloud token; jangan aktifkan request-body logging.
-- `docker compose restart app` — hanya setelah memahami job aktif; power tidak di-replay.
-- `docker compose stop app` — sebelum restore.
-- Pantau volume PostgreSQL, retensi `server_metrics`, hasil backup, rate limit 429, dan token `degraded/offline`.
+Compose menjalankan satu container app dengan named volume `panel-data` (`/app/data`) dan `panel-backups` (`/app/backups`). Tidak ada service database.
+
+```bash
+docker compose up --build -d
+docker compose ps
+docker compose logs --tail=100 app
+```
+
+Bootstrap menggunakan environment interaktif yang sama:
+
+```bash
+docker compose run --rm --no-deps \
+  -e ADMIN_USERNAME -e ADMIN_PASSWORD \
+  app node scripts/bootstrap-admin.mjs
+```
+
+Backup: `docker compose exec app node scripts/backup.mjs`. Salin archive dan sidecar ke luar container/volume untuk offsite retention. Restore dilakukan melalui `docker compose run --rm --no-deps` saat app berhenti; lihat [backup-restore.md](backup-restore.md).
+
+## 8. Operasional
+
+- `pm2 logs cerdasnet-vps-control` — jangan aktifkan request-body logging.
+- `pm2 restart cerdasnet-vps-control` — pahami job aktif; power tidak di-replay.
+- `pm2 stop cerdasnet-vps-control` — wajib sebelum restore.
+- Pantau pertumbuhan `database.json`, retensi `server_metrics`, ruang disk, hasil backup, rate limit 429, dan token `degraded/offline`.
+- JSON store ditujukan untuk satu instance panel pada local filesystem. Jangan taruh database pada NFS/SMB atau shared volume yang ditulis beberapa instance.
 - Atur sinkronisasi/statistik tidak terlalu agresif. `serverPollSeconds` hanya membaca cache panel; `metricsRefreshSeconds` menyentuh UpCloud.
 
-## 7. Checklist go-live
+## 9. Checklist go-live
 
 - [ ] `.env` permission ketat; encryption key tersimpan di secret manager terpisah.
 - [ ] `APP_ORIGIN` HTTPS dan cookie Secure berfungsi.
 - [ ] Admin unik sudah dibootstrap; tidak ada password default.
-- [ ] Database dan port app tidak dapat diakses publik.
+- [ ] Hanya satu proses PM2 memakai `DATA_FILE`; direktori data tidak dapat diakses publik.
 - [ ] Login, CSRF, logout, ganti password, dan session revocation diuji.
 - [ ] Token nonproduksi divalidasi; server list sesuai izin token.
 - [ ] Dark/light, mobile navigation, filter, pagination, dan semua dialog diuji.

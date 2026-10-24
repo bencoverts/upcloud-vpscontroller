@@ -4,7 +4,6 @@ COPY backend/package.json backend/package-lock.json ./
 RUN npm ci
 COPY backend/tsconfig.json ./
 COPY backend/src ./src
-COPY backend/migrations ./migrations
 RUN npm run build && npm prune --omit=dev
 
 FROM node:22-bookworm-slim AS frontend-build
@@ -18,13 +17,17 @@ RUN npm run build
 FROM node:22-bookworm-slim AS runtime
 ENV NODE_ENV=production \
     PORT=3000 \
-    FRONTEND_DIST=/app/frontend/dist
-WORKDIR /app/backend
-COPY --from=backend-build /app/backend/node_modules ./node_modules
-COPY --from=backend-build /app/backend/dist ./dist
-COPY --from=backend-build /app/backend/package.json ./package.json
-COPY backend/migrations ./migrations
-COPY --from=frontend-build /app/frontend/dist /app/frontend/dist
+    FRONTEND_DIST=/app/frontend/dist \
+    DATA_FILE=/app/data/database.json
+WORKDIR /app
+COPY --from=backend-build /app/backend/node_modules ./backend/node_modules
+COPY --from=backend-build /app/backend/dist ./backend/dist
+COPY --from=backend-build /app/backend/package.json ./backend/package.json
+COPY --from=frontend-build /app/frontend/dist ./frontend/dist
+COPY server.js ./server.js
+COPY scripts/backup.mjs scripts/bootstrap-admin.mjs scripts/restore.mjs ./scripts/
+COPY scripts/lib/json-database.mjs ./scripts/lib/json-database.mjs
+RUN mkdir -p /app/data /app/backups && chown -R node:node /app/data /app/backups
 USER node
 EXPOSE 3000
-CMD ["node", "dist/index.js"]
+CMD ["node", "server.js"]

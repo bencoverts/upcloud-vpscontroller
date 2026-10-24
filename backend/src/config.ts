@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { z } from 'zod';
 
 const integer = (fallback: number, min = 1, max = Number.MAX_SAFE_INTEGER) =>
@@ -17,13 +18,7 @@ const envSchema = z.object({
   PORT: integer(3000, 1, 65535),
   APP_ORIGIN: z.string().url().default('http://localhost:5173'),
   FRONTEND_DIST: z.string().optional(),
-  DATABASE_URL: z.string().optional(),
-  PGHOST: z.string().optional(),
-  PGPORT: integer(5432, 1, 65535),
-  PGDATABASE: z.string().optional(),
-  PGUSER: z.string().optional(),
-  PGPASSWORD: z.string().optional(),
-  PGSSL: boolean(false),
+  DATA_FILE: z.string().min(1).default(path.join(process.cwd(), 'data', 'database.json')),
   TOKEN_ENCRYPTION_KEY: z.string().min(32),
   COOKIE_SECURE: boolean(process.env.NODE_ENV === 'production'),
   TRUST_PROXY: integer(1, 0, 10),
@@ -48,8 +43,7 @@ export type AppConfig = {
   port: number;
   appOrigin: string;
   frontendDist?: string;
-  databaseUrl?: string;
-  pg: { host?: string; port: number; database?: string; user?: string; password?: string; ssl: boolean };
+  databasePath: string;
   tokenEncryptionKey: string;
   cookieSecure: boolean;
   trustProxy: number;
@@ -71,9 +65,6 @@ export type AppConfig = {
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const parsed = envSchema.parse(env);
-  if (!parsed.DATABASE_URL && !(parsed.PGHOST && parsed.PGDATABASE && parsed.PGUSER)) {
-    throw new Error('Set DATABASE_URL or PGHOST, PGDATABASE, and PGUSER.');
-  }
   const origin = new URL(parsed.APP_ORIGIN);
   if (parsed.NODE_ENV === 'production' && origin.protocol !== 'https:' && !['localhost', '127.0.0.1'].includes(origin.hostname)) {
     throw new Error('APP_ORIGIN must use HTTPS in production.');
@@ -83,15 +74,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     port: parsed.PORT,
     appOrigin: parsed.APP_ORIGIN.replace(/\/$/, ''),
     frontendDist: parsed.FRONTEND_DIST,
-    databaseUrl: parsed.DATABASE_URL,
-    pg: {
-      host: parsed.PGHOST,
-      port: parsed.PGPORT,
-      database: parsed.PGDATABASE,
-      user: parsed.PGUSER,
-      password: parsed.PGPASSWORD,
-      ssl: parsed.PGSSL,
-    },
+    databasePath: path.resolve(parsed.DATA_FILE),
     tokenEncryptionKey: parsed.TOKEN_ENCRYPTION_KEY,
     cookieSecure: parsed.COOKIE_SECURE,
     trustProxy: parsed.TRUST_PROXY,

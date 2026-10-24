@@ -1,33 +1,18 @@
-import { PGlite } from '@electric-sql/pglite';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import supertest from 'supertest';
 import { vi } from 'vitest';
 import type { AppConfig } from '../config.js';
-import type { Database, Queryable, QueryResult } from '../db/index.js';
-import { runMigrations } from '../db/migrate.js';
+import { createDatabase } from '../db/index.js';
 import { createApplication } from '../app.js';
 import { bootstrapAdmin } from '../auth/service.js';
 import type { UpCloudGateway, UpCloudServerDetails, UpCloudServerSummary, UpCloudStatsSummary } from '../upcloud/types.js';
 
-class PgliteQueryable implements Queryable {
-  constructor(protected readonly client: any) {}
-  async query<T>(text: string, values: readonly unknown[] = []): Promise<QueryResult<T>> {
-    const result = await this.client.query(text, [...values]);
-    return { rows: result.rows as T[], rowCount: result.rows.length > 0 ? result.rows.length : Number(result.affectedRows ?? result.rowCount ?? 0) };
-  }
-  async exec(sql: string): Promise<void> { await this.client.exec(sql); }
-}
-class PgliteDatabase extends PgliteQueryable implements Database {
-  constructor(client: PGlite) { super(client); }
-  async withTransaction<T>(callback: (query: Queryable) => Promise<T>): Promise<T> {
-    return (this.client as PGlite).transaction(async (transaction) => callback(new PgliteQueryable(transaction)));
-  }
-  async close(): Promise<void> { await (this.client as PGlite).close(); }
-}
-
 export const testConfig: AppConfig = {
   nodeEnv: 'test', port: 0, appOrigin: 'http://localhost', tokenEncryptionKey: Buffer.alloc(32, 7).toString('base64'),
-  pg: { port: 5432, ssl: false }, cookieSecure: false, trustProxy: 0, logLevel: 'fatal', sessionTtlHours: 12,
-  upcloudTimeoutMs: 1000, upcloudRetryBaseMs: 1, upcloudDetailsCacheSeconds: 0,
+  databasePath: path.join(tmpdir(), 'cerdasnet-test-placeholder.json'), cookieSecure: false, trustProxy: 0,
+  logLevel: 'fatal', sessionTtlHours: 12, upcloudTimeoutMs: 1000, upcloudRetryBaseMs: 1, upcloudDetailsCacheSeconds: 0,
   syncIntervalSeconds: 300, serverPollSeconds: 5, metricsRefreshSeconds: 60, metricsRetentionDays: 30,
   controlVerifyTimeoutMs: 500, controlVerifyIntervalMs: 2, autoSyncOnBoot: false,
 };
@@ -109,23 +94,30 @@ export class FakeUpCloud implements UpCloudGateway {
 }
 
 export async function createHarness(configOverrides: Partial<AppConfig> = {}) {
-  const pglite = new PGlite();
-  const db = new PgliteDatabase(pglite);
-  await runMigrations(db);
-  const fakes = new Map<string, FakeUpCloud>();
-  const factory = (token: string) => {
-    if (!fakes.has(token)) fakes.set(token, new FakeUpCloud());
-    return fakes.get(token)!;
-  };
-  const application = createApplication({ config: { ...testConfig, ...configOverrides }, db, upcloudFactory: factory });
-  const user = await bootstrapAdmin(db, 'admin', 'TestPassword123!');
-  const agent = supertest.agent(application.app);
-  const loginResponse = await agent.post('/api/auth/login').send({ username: 'admin', password: 'TestPassword123!' });
-  if (loginResponse.status !== 200) throw new Error(`Test login failed: ${JSON.stringify(loginResponse.body)}`);
-  return {
-    ...application, db, fakes, fakeFor: factory, user, agent, csrf: loginResponse.body.data.csrfToken as string,
-    close: () => db.close(),
-  };
+  const directory = await mkdtemp(path.join(tmpdir(), 'cerdasnet-json-test-'));
+  const config = { ...testConfig, ...configOverrides, databasePath: path.join(directory, 'database.json') };
+  const db = await createDatabase(config);
+  try {
+    const fakes = new Map<string, FakeUpCloud>();
+    const factory = (token: string) => {
+      if (!fakes.has(token)) fakes.set(token, new FakeUpCloud());
+      return fakes.get(token)!;
+    };
+    const application = createApplication({ config, db, upcloudFactory: factory });
+    const user = await bootstrapAdmin(db, 'admin', 'TestPassword123!');
+    const agent = supertest.agent(application.app);
+    const loginResponse = await agent.post('/api/auth/login').send({ username: 'admin', password: 'TestPassword123!' });
+    if (loginResponse.status !== 200) throw new Error(`Test login failed: ${JSON.stringify(loginResponse.body)}`);
+    return {
+      ...application, db, fakes, fakeFor: factory, user, agent, directory,
+      csrf: loginResponse.body.data.csrfToken as string,
+      close: async () => { await db.close(); await rm(directory, { recursive: true, force: true }); },
+    };
+  } catch (error) {
+    await db.close();
+    await rm(directory, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 export type Harness = Awaited<ReturnType<typeof createHarness>>;

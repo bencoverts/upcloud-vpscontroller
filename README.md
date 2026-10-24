@@ -1,6 +1,6 @@
 # CerdasNet — VPS Control
 
-Panel kontrol VPS UpCloud full-stack berbahasa Indonesia untuk banyak API token, katalog server global tanpa duplikasi, monitoring yang jujur, kontrol power terverifikasi, dan audit operasional.
+Panel kontrol VPS UpCloud full-stack berbahasa Indonesia untuk banyak API token, katalog server global tanpa duplikasi, monitoring yang jujur, kontrol power terverifikasi, dan audit operasional. Seluruh data panel disimpan dalam **database JSON lokal**—tanpa PostgreSQL atau service database terpisah.
 
 ## Fitur utama
 
@@ -11,70 +11,91 @@ Panel kontrol VPS UpCloud full-stack berbahasa Indonesia untuk banyak API token,
 - Statistik CPU/disk/network dari endpoint resmi UpCloud. Riwayat hanya berisi sampel nyata yang diterima panel—tanpa backfill, interpolasi, atau angka simulasi.
 - Start, soft stop, dan restart dengan dialog konsekuensi, pencegahan klik ganda, active-job uniqueness, dan verifikasi state dari UpCloud.
 - Sinkronisasi per token yang terisolasi, scheduler, cache, timeout, bounded retry/backoff, penanganan 429, job history, retry manual untuk sync, dan audit logs.
-- Argon2id, opaque HttpOnly sessions, CSRF + Origin/Fetch-Site checks, admin authorization, login/API rate limits, AES-256-GCM token encryption, migrations, health checks, dan bootstrap admin satu kali.
+- Argon2id, opaque HttpOnly sessions, CSRF + Origin/Fetch-Site checks, admin authorization, login/API rate limits, AES-256-GCM token encryption, health checks, dan bootstrap admin satu kali.
 
 > **Batas data penting:** RAM/swap usage, filesystem usage, OS uptime, reachability, dan health aplikasi tidak tersedia dari endpoint server stats yang digunakan. UI menandainya **“Tidak tersedia melalui API · agent OS diperlukan”**. Kapasitas RAM/storage adalah konfigurasi, bukan pemakaian. Power state bukan uptime.
 
-## Stack
+## Stack dan penyimpanan
 
-- **Backend:** Node.js 22, Express 5, TypeScript, PostgreSQL, Zod, Argon2id, Pino.
+- **Backend:** Node.js 22, Express 5, TypeScript, Zod, Argon2id, Pino.
 - **Frontend:** React 19, TypeScript, Vite, Tailwind CSS 4, TanStack Query, React Router, Recharts.
-- **Operasional:** Node.js 22 untuk tooling, Docker Compose, PostgreSQL 17, migration runner, backup/restore Node.js dengan `pg_dump` custom-format, Vitest, Testing Library, Node test runner, dan Playwright (opt-in E2E).
+- **Database:** `data/database.json`, dengan penulisan atomik, transaksi dalam proses yang diserialkan, rollback saat error, validasi integritas, permission `0600`, dan lock single-process.
+- **Operasional:** entry point `server.js`, PM2 fork mode, Docker Compose opsional, backup/restore JSON Node.js, Vitest, Testing Library, Node test runner, dan Playwright (opt-in E2E).
 
-## Quick start — Docker Compose
+Tidak ada `DATABASE_URL`, PostgreSQL, `pg_dump`, SQL migration, atau database container yang diperlukan.
 
-Prasyarat: Docker Engine dengan Compose v2, domain HTTPS yang diarahkan ke reverse proxy, dan reverse proxy pada host yang sama.
+## Menjalankan dengan `node server.js`
 
-```bash
-cp .env.example .env
-chmod 600 .env
-# Edit .env. Buat secret dengan:
-openssl rand -hex 32       # TOKEN_ENCRYPTION_KEY
-openssl rand -base64 36    # POSTGRES_PASSWORD
+Prasyarat: Node.js `>=22.12` dan npm.
 
-docker compose up --build -d
-docker compose ps
-```
-
-Buat admin pertama tanpa menaruh password di shell history atau meninggalkan kredensial default:
-
-```bash
-read -rp "Admin username: " ADMIN_USERNAME
-read -rsp "Admin password (min. 12 karakter): " ADMIN_PASSWORD; echo
-export ADMIN_USERNAME ADMIN_PASSWORD
-docker compose run --rm -e ADMIN_USERNAME -e ADMIN_PASSWORD app npm run bootstrap:admin
-unset ADMIN_USERNAME ADMIN_PASSWORD
-```
-
-Bootstrap ditolak jika user sudah ada. Login melalui `APP_ORIGIN`, lalu tambahkan token UpCloud dari **API Token Manager**. Browser tidak pernah mengakses UpCloud secara langsung.
-
-Backend menunggu database healthy, menjalankan migrasi sebelum membuka port, dan menyajikan frontend dari origin yang sama. Secara default hanya `127.0.0.1:3000` yang dipetakan ke host; PostgreSQL tidak dipublikasikan.
-
-## Development lokal
-
-Prasyarat: Node.js `>=22.12`, PostgreSQL, dan npm.
+### 1. Install, konfigurasi, dan build
 
 ```bash
 npm ci
 npm --prefix backend ci
 npm --prefix frontend ci
 
-export DATABASE_URL='postgresql://USER:PASSWORD@127.0.0.1:5432/cerdasnet'
-export TOKEN_ENCRYPTION_KEY="$(openssl rand -hex 32)"
-export APP_ORIGIN='http://localhost:5173'
-export NODE_ENV='development'
+cp .env.example .env
+chmod 600 .env
+openssl rand -hex 32
+```
 
-npm --prefix backend run build
+Edit `.env`:
+
+- Masukkan hasil random key sebagai `TOKEN_ENCRYPTION_KEY`.
+- Untuk production di belakang HTTPS, gunakan `NODE_ENV=production`, `APP_ORIGIN=https://domain-anda`, dan `COOKIE_SECURE=true`.
+- Untuk uji lokal melalui HTTP, gunakan `NODE_ENV=development`, `APP_ORIGIN=http://localhost:3000`, dan `COOKIE_SECURE=false`.
+- Default database adalah `./data/database.json`; ubah `DATA_FILE` bila perlu.
+
+```bash
+npm run build
+```
+
+### 2. Bootstrap admin satu kali
+
+```bash
 read -rp "Admin username: " ADMIN_USERNAME
-read -rsp "Admin password: " ADMIN_PASSWORD; echo
+read -rsp "Admin password (min. 12 karakter): " ADMIN_PASSWORD; echo
 export ADMIN_USERNAME ADMIN_PASSWORD
 npm run bootstrap:admin
 unset ADMIN_USERNAME ADMIN_PASSWORD
+```
 
+Bootstrap ditolak jika user sudah ada. Tidak ada kredensial default permanen.
+
+### 3. Start aplikasi
+
+```bash
+node server.js
+```
+
+`server.js` memuat `.env`, membuka database JSON, menjalankan backend dan scheduler, serta menyajikan frontend hasil build pada `0.0.0.0:3000`. Build ulang dengan `npm run build` setelah mengubah source. Browser tidak pernah mengakses UpCloud secara langsung.
+
+## Menjalankan dengan PM2
+
+Gunakan **satu proses fork** untuk setiap file JSON. Jangan memakai `pm2 -i max`, cluster mode, atau beberapa PM2/systemd process pada `DATA_FILE` yang sama.
+
+```bash
+# Opsi paling singkat:
+pm2 start server.js --name cerdasnet-vps-control
+
+# Atau gunakan konfigurasi yang disediakan (instances: 1, exec_mode: fork):
+pm2 start ecosystem.config.cjs
+
+pm2 status
+pm2 logs cerdasnet-vps-control
+pm2 restart cerdasnet-vps-control
+```
+
+Untuk start otomatis setelah reboot, gunakan `pm2 save` dan perintah `pm2 startup` yang sesuai dengan user/OS Anda. Tinjau perintah startup sebelum menjalankannya sebagai administrator.
+
+## Development lokal
+
+```bash
 npm run dev
 ```
 
-File `.env` otomatis dibaca oleh **Docker Compose**, bukan oleh proses Node development. Untuk development, export variabel melalui mekanisme secret/environment yang aman. Vite berjalan di `:5173`, backend di `:3000`, dan Vite mem-proxy relative `/api` serta `/health`; kode browser tidak memakai `localhost` untuk memanggil backend.
+Vite berjalan di `:5173`, backend di `:3000`, dan Vite mem-proxy relative `/api` serta `/health`. Untuk development melalui dua proses tersebut, export environment yang diperlukan pada shell; entry point produksi `server.js` adalah yang memuat `.env` secara otomatis.
 
 ## Verifikasi
 
@@ -83,42 +104,60 @@ npm run typecheck
 npm run lint
 npm test
 npm run build
-
-# Test tooling Node.js (juga termasuk dalam npm test)
-npm run test:scripts
 ```
 
-Test backend memakai migrasi dan PGlite disposable, session/HTTP/job logic nyata, dan hanya mengganti external UpCloud gateway dengan fake. Test frontend memeriksa client API, konfirmasi power anti-duplikasi, batas seleksi grup, dan empty monitoring states. PGlite bukan pengganti validasi pada PostgreSQL/Docker production.
+Backend integration tests memakai file JSON disposable dan menjalankan encryption, Argon2id/session flow, HTTP routes, sync workers, serta control verification. Hanya external UpCloud gateway/fetch boundary yang di-fake. Test tooling memeriksa backup/restore JSON, checksum, rollback, safety backup, dan lock proses. Live UpCloud test bersifat opt-in dan read-only secara default; lihat [docs/testing.md](docs/testing.md).
 
-Live UpCloud test bersifat opt-in dan read-only secara default. Power test membutuhkan otorisasi nonproduksi tambahan. Lihat [docs/testing.md](docs/testing.md).
+## Backup dan restore JSON
 
-## Backup dan restore
+Backup dapat dilakukan saat aplikasi berjalan karena setiap perubahan database dipublikasikan melalui atomic rename.
 
 ```bash
-# Dengan Compose; katalog dump diverifikasi sebelum file dipindahkan.
-COMPOSE=1 node scripts/backup.mjs
-
-# Restore: hentikan app dahulu. Script membuat safety dump sebelum restore.
-docker compose stop app
-COMPOSE=1 APP_STOPPED=YES RESTORE_CONFIRM=YES \
-  node scripts/restore.mjs backups/cerdasnet-YYYYMMDDTHHMMSSZ.dump
-docker compose start app
+node scripts/backup.mjs
+# Output: backups/cerdasnet-YYYYMMDDTHHMMSSZ.json dan .sha256
 ```
 
-Simpan `TOKEN_ENCRYPTION_KEY` yang sama secara terpisah di secret manager. Database backup tidak berisi kunci tersebut dan tidak mem-backup isi disk VPS. Detail di [docs/backup-restore.md](docs/backup-restore.md).
+Restore bersifat destruktif dan memerlukan aplikasi berhenti:
 
-## Dokumentasi
+```bash
+pm2 stop cerdasnet-vps-control
+APP_STOPPED=YES RESTORE_CONFIRM=YES \
+  node scripts/restore.mjs backups/cerdasnet-YYYYMMDDTHHMMSSZ.json
+pm2 restart cerdasnet-vps-control
+```
 
-- [Deployment Ubuntu, reverse proxy, dan CloudPanel](docs/deployment.md)
-- [Backup, restore, dan recovery](docs/backup-restore.md)
-- [Kontrak UpCloud dan interpretasi metrik](docs/upcloud.md)
-- [Testing dan validasi production](docs/testing.md)
+Restore memvalidasi JSON/checksum, membuat safety backup dari database saat ini, lalu mengganti file secara atomik. Simpan `TOKEN_ENCRYPTION_KEY` yang sama secara terpisah di secret manager. Backup tidak berisi key tersebut dan tidak mem-backup isi disk VPS. Detail di [docs/backup-restore.md](docs/backup-restore.md).
+
+## Docker Compose opsional
+
+Compose hanya memiliki **satu service app** dan volume untuk file JSON serta backup; tidak ada PostgreSQL.
+
+```bash
+cp .env.example .env
+chmod 600 .env
+# Edit APP_ORIGIN dan TOKEN_ENCRYPTION_KEY terlebih dahulu.
+docker compose up --build -d
+docker compose ps
+```
+
+Bootstrap admin di container dengan environment interaktif:
+
+```bash
+docker compose run --rm --no-deps \
+  -e ADMIN_USERNAME -e ADMIN_PASSWORD \
+  app node scripts/bootstrap-admin.mjs
+```
+
+Backup dari container: `docker compose exec app node scripts/backup.mjs`. Lihat panduan deployment/recovery untuk restore dan penyalinan archive keluar volume.
 
 ## Struktur
 
 ```text
+server.js           Entry point tunggal untuk Node.js/PM2
+ecosystem.config.cjs PM2 single-process fork configuration
+data/               Database JSON lokal (diabaikan Git)
 backend/
-  migrations/       SQL migrations dan constraints
+  src/db/           JSON store, transaksi, tipe data, dan integrity checks
   src/auth/         Argon2id, sessions, CSRF, password lifecycle
   src/tokens/       encrypted token lifecycle dan group selection
   src/servers/      katalog UUID global, storage, network, dashboard
@@ -126,11 +165,8 @@ backend/
   src/metrics/      actual UpCloud samples, retention, downsampling
   src/upcloud/      fixed-origin typed API gateway dan normalizers
   src/tests/        integration/unit tests + opt-in live contract
-frontend/
-  src/components/   layout, controls, forms, charts, shared UI
-  src/pages/        dashboard, VPS, tokens, monitoring, activity, settings
-  src/context/      auth, theme, jobs, toasts, SSE invalidation
-scripts/            verified backup dan guarded transactional restore
+frontend/           React dashboard dan shared UI
+scripts/            bootstrap, JSON backup, dan guarded restore
 docs/               deployment, recovery, API contract, testing
 ```
 
@@ -139,6 +175,6 @@ docs/               deployment, recovery, API contract, testing
 - UpCloud token hanya berada di request browser → backend panel saat input/ganti, lalu disimpan sebagai AES-256-GCM ciphertext dengan random IV, token-ID AAD, dan HMAC fingerprint. Nilai penuh tidak pernah dikembalikan setelah penyimpanan.
 - Tidak ada token di frontend bundle, localStorage, URL, audit details, atau log. Jangan pernah menaruh token di `.env` proyek.
 - UpCloud origin di backend tetap `https://api.upcloud.com/1.3`; tidak ada generic arbitrary-URL proxy.
-- Session token disimpan sebagai hash di PostgreSQL. Cookie bersifat HttpOnly/SameSite; Secure di production. Mutasi memerlukan CSRF dan admin role.
+- Session token disimpan sebagai hash di file JSON. Cookie bersifat HttpOnly/SameSite; Secure di production. Mutasi memerlukan CSRF dan admin role.
 - Power request tidak di-retry otomatis. Setelah restart proses, job yang terputus ditandai failed dan power operation tidak diulang membabi buta.
 - Penghapusan token lokal **tidak mencabut token di UpCloud**. Cabut kredensial melalui UpCloud Hub bila sudah tidak dipercaya.
