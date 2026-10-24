@@ -9,17 +9,19 @@ const envFile = path.join(ROOT_DIR, '.env');
 if (existsSync(envFile)) process.loadEnvFile(envFile);
 export const databaseFile = path.resolve(ROOT_DIR, process.env.DATA_FILE || 'data/database.json');
 
-const collections = [
+const baseCollections = [
   'users', 'sessions', 'api_tokens', 'servers', 'token_server_memberships', 'token_server_groups',
   'server_storage', 'server_networks', 'server_metrics', 'sync_jobs', 'audit_logs', 'app_settings',
 ];
+const currentCollections = [...baseCollections.slice(0, 2), 'client_server_access', 'server_agents', ...baseCollections.slice(2)];
 
 export function validateDatabase(value, source = 'JSON database') {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${source} must contain an object.`);
-  if (value.schemaVersion !== 1) throw new Error(`${source} has an unsupported schemaVersion.`);
+  if (![1, 2].includes(value.schemaVersion)) throw new Error(`${source} has an unsupported schemaVersion.`);
   if (typeof value.createdAt !== 'string' || typeof value.updatedAt !== 'string') throw new Error(`${source} timestamps are missing.`);
   if (!Number.isInteger(value.nextMetricId) || value.nextMetricId < 1
     || !Number.isInteger(value.nextAuditId) || value.nextAuditId < 1) throw new Error(`${source} ID counters are invalid.`);
+  const collections = value.schemaVersion === 2 ? currentCollections : baseCollections;
   for (const name of collections) {
     if (!Array.isArray(value[name])) throw new Error(`${source} collection ${name} must be an array.`);
   }

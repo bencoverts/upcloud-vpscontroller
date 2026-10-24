@@ -21,7 +21,7 @@ export function serverFixture(overrides: Partial<ServerDetail> = {}): ServerDeta
     storageGib: 80, upcloudCreatedAt: '2026-01-01T00:00:00.000Z', syncStatus: 'ok', lastError: null,
     lastSyncedAt: new Date().toISOString(), detailsSyncedAt: new Date().toISOString(), lastSyncAttemptAt: new Date().toISOString(),
     publicIps: ['203.0.113.10'], privateIps: [], networkConfigurationStatus: 'available', tokens: [], groups: [],
-    config: {}, storages: [], networks: [], latestMetrics: null, activeJob: null, ...overrides,
+    config: {}, storages: [], networks: [], latestMetrics: null, activeJob: null, accessExpiresAt: null, ...overrides,
   };
 }
 export function jobFixture(overrides: Partial<SyncJob> = {}): SyncJob {

@@ -64,7 +64,6 @@ export function authRoutes(db: Database, auth: AuthService, config: AppConfig): 
 
   router.patch('/password', requireAuth(auth, config), requireCsrf, async (req, res, next) => {
     try {
-      if (req.auth!.user.role !== 'admin') return res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Hanya admin.' } });
       const input = passwordSchema.parse(req.body);
       const userId = req.auth!.user.id;
       await auth.changePassword(userId, input.currentPassword, input.newPassword);

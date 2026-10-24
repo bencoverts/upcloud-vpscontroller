@@ -27,6 +27,21 @@ export function formatStorage(gib: number): string {
   if (gib >= 1024) return `${(gib / 1024).toLocaleString('id-ID', { maximumFractionDigits: 2 })} TiB`;
   return `${gib.toLocaleString('id-ID', { maximumFractionDigits: 1 })} GiB`;
 }
+export function formatBytes(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return 'Tidak tersedia';
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let scaled = Math.max(0, value);
+  let index = 0;
+  while (scaled >= 1024 && index < units.length - 1) { scaled /= 1024; index += 1; }
+  return `${scaled.toLocaleString('id-ID', { maximumFractionDigits: 2 })} ${units[index]}`;
+}
+export function formatUptime(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined || !Number.isFinite(seconds)) return 'Tidak tersedia';
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  return days > 0 ? `${days} hari ${hours} jam` : hours > 0 ? `${hours} jam ${minutes} menit` : `${minutes} menit`;
+}
 export function formatRate(value: number | null | undefined, kind: 'bytes' | 'bits'): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return 'Tidak tersedia';
   const units = kind === 'bytes' ? ['B/s', 'KiB/s', 'MiB/s', 'GiB/s'] : ['bit/s', 'Kbit/s', 'Mbit/s', 'Gbit/s'];

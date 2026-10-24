@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { Database } from '../db/index.js';
 import { requestAudit } from '../http/helpers.js';
 import type { SettingsService } from './service.js';
+import { requireAdmin } from '../auth/middleware.js';
 
 const settingsSchema = z.object({
   syncIntervalSeconds: z.number().int().min(60).max(86_400),
@@ -14,7 +15,7 @@ const settingsSchema = z.object({
 export function settingsRoutes(db: Database, settings: SettingsService): Router {
   const router = Router();
   router.get('/', async (_req, res) => { res.json({ data: await settings.get() }); });
-  router.patch('/', async (req, res, next) => {
+  router.patch('/', requireAdmin, async (req, res, next) => {
     try {
       const result = await settings.update(settingsSchema.parse(req.body));
       await requestAudit(db, req, { action: 'settings.update', resourceType: 'system', outcome: 'success', details: result });

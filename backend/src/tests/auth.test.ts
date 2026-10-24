@@ -49,14 +49,14 @@ describe('panel authentication and authorization', () => {
     } finally { await harness.close(); }
   });
 
-  it('allows viewers to read but rejects all viewer mutations', async () => {
+  it('allows clients to read public settings but rejects administration without assignments', async () => {
     const harness = await createHarness();
     try {
       const passwordHash = await hashPassword('ViewerPassword123!');
       await harness.db.withTransaction(({ data }) => {
         const now = new Date().toISOString();
         data.users.push({
-          id: randomUUID(), username: 'viewer', password_hash: passwordHash, role: 'viewer',
+          id: randomUUID(), username: 'viewer', password_hash: passwordHash, role: 'client',
           disabled: false, created_at: now, updated_at: now,
         });
       });

@@ -8,6 +8,7 @@ export type Server = {
   publicIps: string[]; privateIps: string[]; networkConfigurationStatus: string;
   tokens: TokenGroup[]; groups: TokenGroup[];
   activeJob: { id: string; type: SyncJob['type']; status: string } | null;
+  accessExpiresAt: string | null;
 };
 export type Storage = {
   uuid: string; title: string | null; sizeGib: number; tier: string | null; deviceType: string | null;
@@ -39,7 +40,11 @@ export type SyncJob = {
 export type MetricSample = {
   sampledAt: string; sourcePeriod: string; cpuPercent: number | null;
   diskReadBytesPerSecond: number | null; diskWriteBytesPerSecond: number | null;
-  networkInBitsPerSecond: number | null; networkOutBitsPerSecond: number | null; rawSummary: any;
+  networkInBitsPerSecond: number | null; networkOutBitsPerSecond: number | null;
+  filesystemUsedBytes: number | null; filesystemTotalBytes: number | null;
+  memoryUsedBytes: number | null; memoryTotalBytes: number | null;
+  swapUsedBytes: number | null; swapTotalBytes: number | null; osUptimeSeconds: number | null;
+  fieldSampledAt: Record<string, string>; rawSummary: any;
 };
 export type Availability = { available: boolean; source: string; reason: string | null };
 export type MetricHistory = {
@@ -62,4 +67,13 @@ export type AuditLog = {
   resourceId: string | null; outcome: string; requestId: string | null; ipAddress: string | null;
   userAgent: string | null; details: Record<string, any>; createdAt: string;
 };
-export type PanelUser = { id: string; username: string; role: 'admin' | 'viewer' };
+export type PanelUser = { id: string; username: string; role: 'admin' | 'client' };
+export type ClientAccess = {
+  serverUuid: string; title: string; hostname: string | null; state: string;
+  expiresAt: string | null; expired: boolean; createdAt: string; updatedAt: string;
+};
+export type ClientUser = {
+  id: string; username: string; role: 'client'; disabled: boolean;
+  createdAt: string; updatedAt: string; access: ClientAccess[];
+};
+export type AgentStatus = { configured: boolean; label: string | null; lastSeenAt: string | null };

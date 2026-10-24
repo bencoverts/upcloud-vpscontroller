@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomId } from '../lib/crypto.js';
 import type { AppConfig } from '../config.js';
 import type { Database } from '../db/index.js';
 import { activeJobStatuses } from '../db/types.js';
@@ -28,7 +28,20 @@ export class SyncService {
     private readonly config: AppConfig,
     private readonly events: PanelEvents,
     private readonly logger?: SchedulerLogger,
+    private readonly scheduleTask: (task: () => Promise<void>) => void = (task) => {
+      const timer = setTimeout(() => { void task(); }, 0);
+      (timer as unknown as { unref?: () => void }).unref?.();
+    },
   ) {}
+
+  async upstreamForServer(serverUuid: string) {
+    const token = await this.tokens.bestForServer(serverUuid);
+    return { token, client: this.tokens.gatewayFor(token) };
+  }
+
+  publishServer(serverUuid: string): void {
+    this.events.publish({ type: 'server', payload: { uuid: serverUuid } });
+  }
 
   async enqueueTokenSync(tokenId: string, requestedBy: string | null, trigger: TriggerType = 'manual') {
     await this.tokens.requireRecord(tokenId);
@@ -118,7 +131,7 @@ export class SyncService {
     jobType: JobType,
     input: { tokenId?: string; serverUuid?: string; requestedBy: string | null; trigger?: TriggerType; details?: Record<string, unknown> },
   ) {
-    const id = randomUUID();
+    const id = randomId();
     await this.db.withTransaction(({ data }) => {
       if (input.tokenId && !data.api_tokens.some((token) => token.id === input.tokenId)) {
         throw new AppError(404, 'NOT_FOUND', 'Token untuk job sudah tidak tersedia.');
@@ -142,7 +155,7 @@ export class SyncService {
         details: input.details ?? {}, created_at: now, started_at: null, finished_at: null, updated_at: now,
       });
     });
-    setImmediate(() => { void this.run(id).catch((error: unknown) => this.handleWorkerFailure(id, error)); });
+    this.scheduleTask(() => this.run(id).catch((error: unknown) => this.handleWorkerFailure(id, error)));
     return this.getJob(id);
   }
 
@@ -383,9 +396,9 @@ export class SyncService {
 type SchedulerLogger = { error: (details: { err: unknown }, message: string) => void };
 
 export class SyncScheduler {
-  private timer?: NodeJS.Timeout;
-  private cleanupTimer?: NodeJS.Timeout;
-  private bootTimer?: NodeJS.Timeout;
+  private timer?: ReturnType<typeof setInterval>;
+  private cleanupTimer?: ReturnType<typeof setInterval>;
+  private bootTimer?: ReturnType<typeof setInterval>;
   private running = false;
   private lastRun = 0;
   constructor(

@@ -1,11 +1,11 @@
-import { randomUUID } from 'node:crypto';
+import { randomId } from '../lib/crypto.js';
 import type { AppConfig } from '../config.js';
 import type { Database } from '../db/index.js';
 import { AppError } from '../lib/errors.js';
 import { hashOpaqueToken, randomHex, randomToken } from '../lib/crypto.js';
 import { consumeDummyPasswordCheck, hashPassword, verifyPassword } from '../lib/password.js';
 
-export type PanelUser = { id: string; username: string; role: 'admin' | 'viewer' };
+export type PanelUser = { id: string; username: string; role: 'admin' | 'client' };
 export type AuthContext = {
   sessionId: string;
   user: PanelUser;
@@ -26,7 +26,7 @@ export class AuthService {
     if (!valid || user.disabled) throw new AppError(401, 'UNAUTHENTICATED', 'Username atau password tidak sesuai.');
     const sessionToken = randomToken();
     const csrfToken = randomHex();
-    const sessionId = randomUUID();
+    const sessionId = randomId();
     const expiresAt = new Date(Date.now() + this.config.sessionTtlHours * 60 * 60 * 1000);
     const now = new Date().toISOString();
     await this.db.withTransaction(({ data }) => {
@@ -88,7 +88,7 @@ export class AuthService {
 }
 
 export async function bootstrapAdmin(db: Database, username: string, password: string): Promise<PanelUser> {
-  const user: PanelUser = { id: randomUUID(), username, role: 'admin' };
+  const user: PanelUser = { id: randomId(), username, role: 'admin' };
   const passwordHash = await hashPassword(password);
   await db.withTransaction(({ data }) => {
     if (data.users.length > 0) {

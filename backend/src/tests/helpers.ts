@@ -69,6 +69,14 @@ export class FakeUpCloud implements UpCloudGateway {
     this.details.set(uuid, detail);
     return detail;
   });
+  updateServer = vi.fn(async (uuid: string, identity: { title: string; hostname: string }) => {
+    const summary = this.servers.find((server) => server.uuid === uuid);
+    if (!summary) throw new Error('Server not found in fake');
+    Object.assign(summary, identity);
+    const detail = detailsFor(summary);
+    this.details.set(uuid, detail);
+    return detail;
+  });
   getCpuStats = vi.fn(async (_uuid: string, _period: any = 'daily') => stats([
     { title: 'CPU usage %', current: '12.5 %', average: '10 %', maximum: '80 %', total: '50 seconds' },
   ]));

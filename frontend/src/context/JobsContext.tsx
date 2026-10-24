@@ -40,6 +40,17 @@ export function JobsProvider({ children }: { children: ReactNode }) {
   }, [push, queryClient]);
 
   useEffect(() => {
+    const receive = (event: Event) => {
+      const job = (event as CustomEvent<SyncJob>).detail;
+      if (!job?.id) return;
+      setJobs((current) => ({ ...current, [job.id]: job }));
+      if (!activeStatuses.has(job.status)) finish(job);
+    };
+    window.addEventListener('cerdasnet:job', receive);
+    return () => window.removeEventListener('cerdasnet:job', receive);
+  }, [finish]);
+
+  useEffect(() => {
     const active = Object.values(jobs).filter((job) => activeStatuses.has(job.status));
     if (active.length === 0) return;
     let cancelled = false;
@@ -50,7 +61,7 @@ export function JobsProvider({ children }: { children: ReactNode }) {
           if (cancelled) return;
           setJobs((current) => ({ ...current, [updated.id]: updated }));
           if (!activeStatuses.has(updated.status)) finish(updated);
-        } catch { /* SSE/render will surface backend connection state; retry next interval. */ }
+        } catch { /* WebSocket/render will surface backend connection state; retry next interval. */ }
       }));
     };
     const timer = window.setInterval(poll, 900);

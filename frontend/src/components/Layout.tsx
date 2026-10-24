@@ -3,7 +3,7 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useMutation } from '@tanstack/react-query';
 import {
   Activity, Cloud, KeyRound, LayoutDashboard, LogOut, Menu, Moon, RefreshCw,
-  Server, Settings, ShieldCheck, Sun, X, Zap,
+  Server, Settings, ShieldCheck, Sun, Users, X, Zap,
 } from 'lucide-react';
 import { api } from '../api';
 import type { SyncJob } from '../types';
@@ -18,12 +18,13 @@ import { Button, Skeleton } from './ui';
 const navigation = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/servers', label: 'VPS Servers', icon: Server },
-  { to: '/tokens', label: 'API Token Manager', icon: KeyRound },
+  { to: '/tokens', label: 'API Token Manager', icon: KeyRound, admin: true },
   { to: '/monitoring', label: 'Monitoring', icon: Activity },
-  { to: '/activity', label: 'Activity Logs', icon: Zap },
+  { to: '/activity', label: 'Activity Logs', icon: Zap, admin: true },
+  { to: '/users', label: 'Client Users', icon: Users, admin: true },
   { to: '/settings', label: 'Settings', icon: Settings },
 ];
-const pageNames: Record<string, string> = { '/': 'Dashboard', '/servers': 'VPS Servers', '/tokens': 'API Token Manager', '/monitoring': 'Monitoring', '/activity': 'Activity Logs', '/settings': 'Settings' };
+const pageNames: Record<string, string> = { '/': 'Dashboard', '/servers': 'VPS Servers', '/tokens': 'API Token Manager', '/monitoring': 'Monitoring', '/activity': 'Activity Logs', '/settings': 'Settings', '/users': 'Client Users' };
 
 export function Brand({ compact = false }: { compact?: boolean }) {
   return <div className="flex items-center gap-3"><div className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-[13px] bg-gradient-to-br from-teal-400 to-emerald-600 text-white shadow-lg shadow-teal-600/20"><Cloud className="h-5 w-5" strokeWidth={2.2} /><span className="absolute -right-0.5 -bottom-0.5 h-3 w-3 rounded-full border-2 border-white bg-emerald-400 dark:border-slate-900" /></div>{!compact && <div><div className="text-[17px] font-extrabold tracking-[-0.035em] text-slate-950 dark:text-white">CerdasNet</div><div className="text-[9px] font-bold tracking-[0.2em] text-slate-400 uppercase dark:text-slate-500">VPS Control</div></div>}</div>;
@@ -50,7 +51,7 @@ export default function Layout() {
     try { await logout(); } catch (error) { push('error', 'Logout gagal', error instanceof Error ? error.message : undefined); }
   };
   const title = location.pathname.startsWith('/servers/') ? 'Detail VPS' : pageNames[location.pathname] ?? 'CerdasNet';
-  const nav = <nav className="mt-8 space-y-1.5" aria-label="Navigasi utama">{navigation.map((item) => <NavLink key={item.to} to={item.to} end={item.end} onClick={() => setMobileOpen(false)} className={({ isActive }) => cx('group flex min-h-11 items-center gap-3 rounded-xl px-3.5 text-sm font-medium', isActive ? 'bg-teal-50 text-teal-700 shadow-[inset_0_0_0_1px_rgb(20_184_166_/_0.08)] dark:bg-teal-500/10 dark:text-teal-400' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800/70 dark:hover:text-white')}>
+  const nav = <nav className="mt-8 space-y-1.5" aria-label="Navigasi utama">{navigation.filter((item) => !item.admin || user?.role === 'admin').map((item) => <NavLink key={item.to} to={item.to} end={item.end} onClick={() => setMobileOpen(false)} className={({ isActive }) => cx('group flex min-h-11 items-center gap-3 rounded-xl px-3.5 text-sm font-medium', isActive ? 'bg-teal-50 text-teal-700 shadow-[inset_0_0_0_1px_rgb(20_184_166_/_0.08)] dark:bg-teal-500/10 dark:text-teal-400' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800/70 dark:hover:text-white')}>
     <item.icon className="h-[18px] w-[18px] shrink-0" />{item.label}
   </NavLink>)}</nav>;
   return <div className="min-h-screen bg-[#f5f7fb] text-slate-800 dark:bg-[#0a0f1c] dark:text-slate-200">
@@ -67,10 +68,10 @@ export default function Layout() {
     <div className="lg:pl-64">
       <header className="sticky top-0 z-20 flex h-[70px] items-center gap-3 border-b border-slate-200/70 bg-white/85 px-4 backdrop-blur-xl dark:border-slate-800/80 dark:bg-slate-950/80 sm:px-6 lg:px-8">
         <Button variant="ghost" size="icon" className="lg:hidden" onClick={() => setMobileOpen(true)} aria-label="Buka navigasi"><Menu className="h-5 w-5" /></Button>
-        <div className="min-w-0"><h2 className="truncate text-sm font-bold text-slate-900 dark:text-white">{title}</h2><div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-slate-400"><span className={cx('h-1.5 w-1.5 rounded-full', live === 'live' ? 'live-dot bg-emerald-500' : live === 'connecting' ? 'bg-amber-500' : 'bg-rose-500')} />{live === 'live' ? 'Panel live' : live === 'connecting' ? 'Menghubungkan' : 'Koneksi terputus'}<span className="hidden sm:inline">· sumber via polling</span></div></div>
+        <div className="min-w-0"><h2 className="truncate text-sm font-bold text-slate-900 dark:text-white">{title}</h2><div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-slate-400"><span className={cx('h-1.5 w-1.5 rounded-full', live === 'live' ? 'live-dot bg-emerald-500' : live === 'connecting' ? 'bg-amber-500' : 'bg-rose-500')} />{live === 'live' ? 'Panel live' : live === 'connecting' ? 'Menghubungkan' : 'Koneksi terputus'}<span className="hidden sm:inline">· WebSocket realtime</span></div></div>
         <div className="ml-auto flex items-center gap-1.5 sm:gap-2">
           {activeCount > 0 && <span className="hidden rounded-full bg-sky-50 px-2.5 py-1 text-[11px] font-semibold text-sky-600 dark:bg-sky-500/10 dark:text-sky-400 sm:inline">{activeCount} job dipantau</span>}
-          <Button variant="outline" size="sm" loading={syncAll.isPending} onClick={() => syncAll.mutate()} title="Sinkronisasi semua token aktif"><RefreshCw className="h-4 w-4" /><span className="hidden md:inline">Sinkronisasi semua</span></Button>
+          {user?.role === 'admin' && <Button variant="outline" size="sm" loading={syncAll.isPending} onClick={() => syncAll.mutate()} title="Sinkronisasi semua token aktif"><RefreshCw className="h-4 w-4" /><span className="hidden md:inline">Sinkronisasi semua</span></Button>}
           <Button variant="ghost" size="icon" onClick={toggleTheme} aria-label={theme === 'dark' ? 'Gunakan mode terang' : 'Gunakan mode gelap'}>{theme === 'dark' ? <Sun className="h-[18px] w-[18px]" /> : <Moon className="h-[18px] w-[18px]" />}</Button>
           <div className="mx-1 hidden h-7 w-px bg-slate-200 dark:bg-slate-800 sm:block" />
           <div className="hidden text-right xl:block"><p className="text-xs font-semibold text-slate-800 dark:text-slate-200">{user?.username}</p><p className="text-[10px] text-slate-400 capitalize">{user?.role}</p></div>

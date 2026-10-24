@@ -58,6 +58,12 @@ export class UpCloudClient implements UpCloudGateway {
     return normalizeServerDetails(await this.request(`/server/${encodeURIComponent(uuid)}`));
   }
 
+  async updateServer(uuid: string, identity: { title: string; hostname: string }) {
+    return normalizeServerDetails(await this.request(`/server/${encodeURIComponent(uuid)}`, {
+      method: 'PUT', body: { server: identity }, retry: false,
+    }));
+  }
+
   async getCpuStats(uuid: string, period: UpCloudStatsSummary['period'] = 'daily') {
     return normalizeStats(await this.request(`/server/${encodeURIComponent(uuid)}/stats/cpu/${period}`), period);
   }
@@ -110,7 +116,7 @@ export class UpCloudClient implements UpCloudGateway {
           redirect: 'error',
         });
         const responseText = await response.text();
-        if (Buffer.byteLength(responseText, 'utf8') > MAX_RESPONSE_BYTES) {
+        if (new TextEncoder().encode(responseText).byteLength > MAX_RESPONSE_BYTES) {
           throw new UpCloudApiError(502, 'UPCLOUD_ERROR', 'Respons UpCloud melebihi batas ukuran yang diizinkan.');
         }
         let payload: any = null;

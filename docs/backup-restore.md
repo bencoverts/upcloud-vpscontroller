@@ -16,6 +16,12 @@ Simpan encryption key pada secret manager dengan backup terpisah. Tanpa key yang
 
 `restore.mjs` mewajibkan `APP_STOPPED=YES` dan `RESTORE_CONFIRM=YES`, memeriksa PID pada database lock, memvalidasi JSON dan checksum sidecar bila tersedia, membuat pre-restore safety backup, mengganti file melalui atomic rename, lalu membaca dan memvalidasi hasilnya. Restore tidak boleh dijalankan bersamaan dengan panel atau restore lain.
 
+## Download langsung dari panel
+
+Admin dapat memilih **Settings → Download backup JSON** pada Node.js maupun Cloudflare Workers. Endpoint menghasilkan attachment JSON dari snapshot konsisten dan selalu mengosongkan koleksi live `sessions`. Encryption key tidak disertakan. Simpan download pada storage terenkripsi; file tetap memuat password hashes, encrypted UpCloud tokens, konfigurasi, dan audit sehingga harus diperlakukan sebagai data rahasia.
+
+Restore CLI berikut hanya berlaku untuk file JSON Node.js. Untuk R2/Workers, ikuti maintenance-window guidance pada [cloudflare.md](cloudflare.md).
+
 ## Backup pada Node.js/PM2
 
 Jalankan dari direktori proyek:
@@ -88,7 +94,7 @@ curl --fail http://127.0.0.1:3000/health/ready
 
 ## Verifikasi setelah restore
 
-- `schemaVersion` tetap `1`; koleksi users, servers, tokens, jobs, dan audit dapat dibaca aplikasi.
+- `schemaVersion` adalah versi yang didukung aplikasi (saat ini `2`); koleksi users, client access, servers, tokens, jobs, dan audit dapat dibaca aplikasi.
 - Admin dapat login; session lama yang masih valid harus ditinjau/dicabut sesuai insiden.
 - Token status awal mungkin `unknown` sampai test/sync; jangan menganggap valid hanya karena ciphertext berhasil direstore.
 - UUID server tidak terduplikasi dan relasi grup maksimal dua slot tetap utuh.

@@ -15,3 +15,5 @@ data/
 .vite/
 *.tsbuildinfo
 .pytest_cache/
+.wrangler/
+.dev.vars

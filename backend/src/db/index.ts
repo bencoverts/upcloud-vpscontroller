@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { access, chmod, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import type { AppConfig } from '../config.js';
-import { assertDatabaseData, createEmptyDatabase } from './types.js';
+import { assertDatabaseData, migrateDatabaseData, createEmptyDatabase } from './types.js';
 import type { DatabaseData } from './types.js';
 
 export type DatabaseTransaction = { data: DatabaseData };
@@ -47,8 +47,9 @@ export class JsonDatabase implements Database {
         const raw = await readFile(filePath, 'utf8');
         let parsed: unknown;
         try { parsed = JSON.parse(raw); } catch { throw new Error(`Invalid JSON in database file: ${filePath}`); }
-        assertDatabaseData(parsed);
-        state = parsed;
+        const migrated = migrateDatabaseData(parsed);
+        state = migrated.data;
+        if (migrated.migrated) await persistAtomic(filePath, state);
       } catch (error: any) {
         if (error?.code !== 'ENOENT') throw error;
         state = createEmptyDatabase({
