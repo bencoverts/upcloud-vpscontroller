@@ -1,0 +1,77 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB:?Set POSTGRES_DB in .env}"
+      POSTGRES_USER: "${POSTGRES_USER:?Set POSTGRES_USER in .env}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}"
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    networks: [panel]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cerdasnet-vps-control:local
+    restart: unless-stopped
+    init: true
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      APP_ORIGIN: "${APP_ORIGIN:?Set APP_ORIGIN to the public HTTPS origin}"
+      PGHOST: db
+      PGPORT: "5432"
+      PGDATABASE: "${POSTGRES_DB}"
+      PGUSER: "${POSTGRES_USER}"
+      PGPASSWORD: "${POSTGRES_PASSWORD}"
+      PGSSL: "false"
+      TOKEN_ENCRYPTION_KEY: "${TOKEN_ENCRYPTION_KEY:?Set a random 32-byte TOKEN_ENCRYPTION_KEY}"
+      COOKIE_SECURE: "true"
+      TRUST_PROXY: "${TRUST_PROXY:-1}"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+      SESSION_TTL_HOURS: "${SESSION_TTL_HOURS:-12}"
+      SYNC_INTERVAL_SECONDS: "${SYNC_INTERVAL_SECONDS:-300}"
+      SERVER_POLL_SECONDS: "${SERVER_POLL_SECONDS:-30}"
+      METRICS_REFRESH_SECONDS: "${METRICS_REFRESH_SECONDS:-300}"
+      METRICS_RETENTION_DAYS: "${METRICS_RETENTION_DAYS:-30}"
+      AUTO_SYNC_ON_BOOT: "${AUTO_SYNC_ON_BOOT:-true}"
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-3000}:3000"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks: [panel]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  postgres-data:
+
+networks:
+  panel:
+    driver: bridge
