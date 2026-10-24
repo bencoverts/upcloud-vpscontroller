@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import type { AppConfig } from '../config.js';
 import type { Database } from '../db/index.js';
+import { activeJobStatuses } from '../db/types.js';
+import type { SyncJobRecord } from '../db/types.js';
 import { AppError, sanitizeUpstreamMessage } from '../lib/errors.js';
-import { writeAudit } from '../lib/audit.js';
+import { appendAudit } from '../lib/audit.js';
 import type { PanelEvents } from '../lib/events.js';
 import { TokenService } from '../tokens/service.js';
 import { UpCloudApiError } from '../upcloud/client.js';
@@ -10,22 +12,12 @@ import type { UpCloudServerDetails, UpCloudServerSummary } from '../upcloud/type
 import { deactivateMissingMemberships, persistServer, upsertMembership } from '../servers/catalog.js';
 import { SettingsService } from '../settings/service.js';
 
-type JobType = 'token_sync' | 'server_sync' | 'server_control';
-type TriggerType = 'manual' | 'automatic' | 'retry';
+type JobType = SyncJobRecord['job_type'];
+type TriggerType = SyncJobRecord['trigger_type'];
 type ControlAction = 'start' | 'stop' | 'restart';
-
-type JobRow = {
-  id: string; job_type: JobType; status: string; token_id: string | null; server_uuid: string | null;
-  requested_by: string | null; trigger_type: TriggerType; attempts: number; error_code: string | null;
-  error_message: string | null; details: any; created_at: Date; started_at: Date | null;
-  finished_at: Date | null; updated_at: Date;
-};
+type JobRow = SyncJobRecord;
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-const json = <T>(value: unknown, fallback: T): T => {
-  if (typeof value === 'string') { try { return JSON.parse(value) as T; } catch { return fallback; } }
-  return value as T ?? fallback;
-};
 
 class VerificationTimeout extends Error {}
 
@@ -68,36 +60,34 @@ export class SyncService {
   }
 
   async getJob(id: string) {
-    const result = await this.db.query<JobRow>('SELECT * FROM sync_jobs WHERE id=$1', [id]);
-    if (!result.rows[0]) throw new AppError(404, 'NOT_FOUND', 'Job sinkronisasi tidak ditemukan.');
-    return this.toDto(result.rows[0]);
+    const job = await this.db.read((data) => data.sync_jobs.find((row) => row.id === id));
+    if (!job) throw new AppError(404, 'NOT_FOUND', 'Job sinkronisasi tidak ditemukan.');
+    return this.toDto(job);
   }
 
   async listJobs(input: { page: number; limit: number; status?: string; type?: string; search?: string }) {
-    const conditions: string[] = [];
-    const values: unknown[] = [];
-    if (input.status) { values.push(input.status); conditions.push(`status=$${values.length}`); }
-    if (input.type) { values.push(input.type); conditions.push(`job_type=$${values.length}`); }
-    if (input.search) {
-      values.push(`%${input.search}%`);
-      const placeholder = `$${values.length}`;
-      conditions.push(`(id::text ILIKE ${placeholder} OR COALESCE(server_uuid,'') ILIKE ${placeholder} OR COALESCE(token_id::text,'') ILIKE ${placeholder} OR COALESCE(error_message,'') ILIKE ${placeholder})`);
-    }
-    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-    const count = await this.db.query<{ count: string }>(`SELECT COUNT(*)::text AS count FROM sync_jobs ${where}`, values);
-    values.push(input.limit, (input.page - 1) * input.limit);
-    const result = await this.db.query<JobRow>(
-      `SELECT * FROM sync_jobs ${where} ORDER BY created_at DESC LIMIT $${values.length - 1} OFFSET $${values.length}`, values);
-    const total = Number(count.rows[0]?.count ?? 0);
-    return {
-      items: result.rows.map((row) => this.toDto(row)),
-      pagination: { page: input.page, limit: input.limit, total, pages: Math.max(1, Math.ceil(total / input.limit)) },
-    };
+    return this.db.read((data) => {
+      const search = input.search?.toLowerCase();
+      const rows = data.sync_jobs.filter((job) => {
+        if (input.status && job.status !== input.status) return false;
+        if (input.type && job.job_type !== input.type) return false;
+        if (search) {
+          const haystack = `${job.id} ${job.server_uuid ?? ''} ${job.token_id ?? ''} ${job.error_message ?? ''}`.toLowerCase();
+          if (!haystack.includes(search)) return false;
+        }
+        return true;
+      }).sort((left, right) => right.created_at.localeCompare(left.created_at));
+      const total = rows.length;
+      const offset = (input.page - 1) * input.limit;
+      return {
+        items: rows.slice(offset, offset + input.limit).map((row) => this.toDto(row)),
+        pagination: { page: input.page, limit: input.limit, total, pages: Math.max(1, Math.ceil(total / input.limit)) },
+      };
+    });
   }
 
   async retry(id: string, requestedBy: string) {
-    const result = await this.db.query<JobRow>('SELECT * FROM sync_jobs WHERE id=$1', [id]);
-    const job = result.rows[0];
+    const job = await this.db.read((data) => data.sync_jobs.find((row) => row.id === id));
     if (!job) throw new AppError(404, 'NOT_FOUND', 'Job tidak ditemukan.');
     if (!['failed', 'verification_timeout'].includes(job.status)) {
       throw new AppError(409, 'CONFLICT', 'Hanya job yang gagal atau timeout yang dapat dicoba ulang.');
@@ -111,10 +101,17 @@ export class SyncService {
   }
 
   async recoverInterruptedJobs(): Promise<void> {
-    await this.db.query(
-      `UPDATE sync_jobs SET status='failed',error_code='PROCESS_RESTARTED',
-        error_message='Proses panel berhenti sebelum job selesai. Verifikasi status resource; operasi power tidak diulang otomatis.',
-        finished_at=now(),updated_at=now() WHERE status IN ('queued','running','verifying')`);
+    await this.db.withTransaction(({ data }) => {
+      const now = new Date().toISOString();
+      for (const job of data.sync_jobs) {
+        if (!activeJobStatuses.has(job.status)) continue;
+        Object.assign(job, {
+          status: 'failed' as const, error_code: 'PROCESS_RESTARTED',
+          error_message: 'Proses panel berhenti sebelum job selesai. Verifikasi status resource; operasi power tidak diulang otomatis.',
+          finished_at: now, updated_at: now,
+        });
+      }
+    });
   }
 
   private async enqueue(
@@ -122,25 +119,53 @@ export class SyncService {
     input: { tokenId?: string; serverUuid?: string; requestedBy: string | null; trigger?: TriggerType; details?: Record<string, unknown> },
   ) {
     const id = randomUUID();
-    try {
-      await this.db.query(
-        `INSERT INTO sync_jobs(id,job_type,status,token_id,server_uuid,requested_by,trigger_type,details)
-         VALUES ($1,$2,'queued',$3,$4,$5,$6,$7::jsonb)`,
-        [id, jobType, input.tokenId ?? null, input.serverUuid ?? null, input.requestedBy,
-          input.trigger ?? 'manual', JSON.stringify(input.details ?? {})]);
-    } catch (error: any) {
-      if (error?.code === '23505') throw new AppError(409, 'CONFLICT', 'Sudah ada job aktif untuk resource ini. Tunggu hingga selesai.');
-      throw error;
-    }
+    await this.db.withTransaction(({ data }) => {
+      if (input.tokenId && !data.api_tokens.some((token) => token.id === input.tokenId)) {
+        throw new AppError(404, 'NOT_FOUND', 'Token untuk job sudah tidak tersedia.');
+      }
+      if (input.serverUuid && !data.servers.some((server) => server.uuid === input.serverUuid)) {
+        throw new AppError(404, 'NOT_FOUND', 'Server untuk job sudah tidak tersedia.');
+      }
+      const conflict = data.sync_jobs.some((job) => {
+        if (!activeJobStatuses.has(job.status)) return false;
+        if (input.tokenId && job.token_id === input.tokenId) return true;
+        return Boolean(input.serverUuid && job.server_uuid === input.serverUuid
+          && ['server_sync', 'server_control'].includes(jobType)
+          && ['server_sync', 'server_control'].includes(job.job_type));
+      });
+      if (conflict) throw new AppError(409, 'CONFLICT', 'Sudah ada job aktif untuk resource ini. Tunggu hingga selesai.');
+      const now = new Date().toISOString();
+      data.sync_jobs.push({
+        id, job_type: jobType, status: 'queued', token_id: input.tokenId ?? null,
+        server_uuid: input.serverUuid ?? null, requested_by: input.requestedBy,
+        trigger_type: input.trigger ?? 'manual', attempts: 0, error_code: null, error_message: null,
+        details: input.details ?? {}, created_at: now, started_at: null, finished_at: null, updated_at: now,
+      });
+    });
     setImmediate(() => { void this.run(id).catch((error: unknown) => this.handleWorkerFailure(id, error)); });
     return this.getJob(id);
   }
 
+  private async updateJob(id: string, patch: Partial<SyncJobRecord>, onlyActive = false): Promise<JobRow | undefined> {
+    return this.db.withTransaction(({ data }) => {
+      const job = data.sync_jobs.find((row) => row.id === id);
+      if (!job || (onlyActive && !activeJobStatuses.has(job.status))) return undefined;
+      Object.assign(job, patch, { updated_at: new Date().toISOString() });
+      return job;
+    });
+  }
+
   private async run(id: string): Promise<void> {
-    const started = await this.db.query<JobRow>(
-      `UPDATE sync_jobs SET status='running',started_at=COALESCE(started_at,now()),attempts=attempts+1,updated_at=now()
-       WHERE id=$1 AND status='queued' RETURNING *`, [id]);
-    const job = started.rows[0];
+    const job = await this.db.withTransaction(({ data }) => {
+      const current = data.sync_jobs.find((row) => row.id === id && row.status === 'queued');
+      if (!current) return null;
+      const now = new Date().toISOString();
+      current.status = 'running';
+      current.started_at ??= now;
+      current.attempts += 1;
+      current.updated_at = now;
+      return current;
+    });
     if (!job) return;
     await this.publish(id);
     let action: string = job.job_type;
@@ -148,14 +173,19 @@ export class SyncService {
       if (job.job_type === 'token_sync') await this.runTokenSync(job);
       else if (job.job_type === 'server_sync') await this.runServerSync(job);
       else {
-        action = `server.${json<Record<string, unknown>>(job.details, {}).action ?? 'control'}`;
+        action = `server.${job.details.action ?? 'control'}`;
         await this.runControl(job);
       }
-      await this.db.query(
-        `UPDATE sync_jobs SET status='succeeded',error_code=NULL,error_message=NULL,finished_at=now(),updated_at=now() WHERE id=$1`, [id]);
-      await writeAudit(this.db, {
-        userId: job.requested_by, action, resourceType: job.server_uuid ? 'server' : 'token',
-        resourceId: job.server_uuid ?? job.token_id, outcome: 'success', details: { jobId: id, trigger: job.trigger_type },
+      await this.db.withTransaction((transaction) => {
+        const current = transaction.data.sync_jobs.find((row) => row.id === id);
+        if (current) Object.assign(current, {
+          status: 'succeeded' as const, error_code: null, error_message: null,
+          finished_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+        });
+        appendAudit(transaction, {
+          userId: job.requested_by, action, resourceType: job.server_uuid ? 'server' : 'token',
+          resourceId: job.server_uuid ?? job.token_id, outcome: 'success', details: { jobId: id, trigger: job.trigger_type },
+        });
       });
     } catch (error) {
       const timeout = error instanceof VerificationTimeout;
@@ -163,16 +193,20 @@ export class SyncService {
       const message = timeout
         ? 'UpCloud menerima operasi, tetapi status target belum terverifikasi sebelum timeout. Refresh status; jangan ulangi tindakan secara buta.'
         : sanitizeUpstreamMessage(error instanceof Error ? error.message : 'Job gagal.');
-      await this.db.query(
-        `UPDATE sync_jobs SET status=$2,error_code=$3,error_message=$4,finished_at=now(),updated_at=now() WHERE id=$1`,
-        [id, timeout ? 'verification_timeout' : 'failed', code, message]);
       if (job.token_id && !timeout) {
         try { await this.tokens.markError(await this.tokens.requireRecord(job.token_id), error); } catch { /* resource may be deleted */ }
       }
-      await writeAudit(this.db, {
-        userId: job.requested_by, action, resourceType: job.server_uuid ? 'server' : 'token',
-        resourceId: job.server_uuid ?? job.token_id, outcome: timeout ? 'accepted' : 'failure',
-        details: { jobId: id, errorCode: code, trigger: job.trigger_type },
+      await this.db.withTransaction((transaction) => {
+        const current = transaction.data.sync_jobs.find((row) => row.id === id);
+        if (current) Object.assign(current, {
+          status: timeout ? 'verification_timeout' as const : 'failed' as const, error_code: code,
+          error_message: message, finished_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+        });
+        appendAudit(transaction, {
+          userId: job.requested_by, action, resourceType: job.server_uuid ? 'server' : 'token',
+          resourceId: job.server_uuid ?? job.token_id, outcome: timeout ? 'accepted' : 'failure',
+          details: { jobId: id, errorCode: code, trigger: job.trigger_type },
+        });
       });
     } finally {
       await this.publish(id);
@@ -185,11 +219,11 @@ export class SyncService {
     if (this.logger) this.logger.error({ err: error }, 'Background job failed outside its normal error path');
     else console.error('Background job failed outside its normal error path');
     try {
-      await this.db.query(
-        `UPDATE sync_jobs SET status='failed',error_code='WORKER_FAILED',
-          error_message='Worker berhenti karena kesalahan internal. Periksa status resource sebelum mencoba lagi.',
-          finished_at=now(),updated_at=now()
-         WHERE id=$1 AND status IN ('queued','running','verifying')`, [id]);
+      await this.updateJob(id, {
+        status: 'failed', error_code: 'WORKER_FAILED',
+        error_message: 'Worker berhenti karena kesalahan internal. Periksa status resource sebelum mencoba lagi.',
+        finished_at: new Date().toISOString(),
+      }, true);
       const job = await this.getJob(id);
       this.events.publish({ type: 'job', payload: job });
       if (job.serverUuid) this.events.publish({ type: 'server', payload: { uuid: job.serverUuid } });
@@ -213,8 +247,7 @@ export class SyncService {
       while (cursor < unique.length) {
         const summary = unique[cursor++]!;
         try {
-          const cached = await this.db.query<{ details_synced_at: Date | null }>('SELECT details_synced_at FROM servers WHERE uuid=$1', [summary.uuid]);
-          const detailsAt = cached.rows[0]?.details_synced_at;
+          const detailsAt = await this.db.read((data) => data.servers.find((row) => row.uuid === summary.uuid)?.details_synced_at);
           const fresh = detailsAt && Date.now() - new Date(detailsAt).getTime() < this.config.upcloudDetailsCacheSeconds * 1000;
           resolved.set(summary.uuid, fresh ? summary : await client.getServer(summary.uuid));
         } catch (error) {
@@ -227,23 +260,31 @@ export class SyncService {
       }
     });
     await Promise.all(workers);
-    await this.db.withTransaction(async (query) => {
+    await this.db.withTransaction(({ data }) => {
       for (const [uuid, server] of resolved) {
         const failure = failures.get(uuid);
-        await persistServer(query, server, failure ? { syncStatus: 'degraded', error: failure.message } : {});
-        await upsertMembership(query, token.id, uuid);
+        persistServer(data, server, failure ? { syncStatus: 'degraded', error: failure.message } : {});
+        upsertMembership(data, token.id, uuid);
       }
-      await deactivateMissingMemberships(query, token.id, unique.map((server) => server.uuid));
-      await query.query(
-        `UPDATE api_tokens SET validation_status='valid',connection_status=$2,
-          last_error_code=$3,last_error_message=$4,last_validated_at=now(),last_used_at=now(),last_sync_at=now(),updated_at=now()
-         WHERE id=$1`,
-        [token.id, failures.size ? 'degraded' : 'online', failures.size ? 'PARTIAL_SERVER_SYNC' : null,
-          failures.size ? `${failures.size} detail server gagal diperbarui; data cache sebelumnya dipertahankan.` : null]);
-      await query.query('UPDATE sync_jobs SET details=details || $2::jsonb,updated_at=now() WHERE id=$1', [job.id, JSON.stringify({
-        serverCount: unique.length,
-        detailFailures: [...failures.entries()].map(([uuid, failure]) => ({ uuid, code: failure.code, message: failure.message })),
-      })]);
+      deactivateMissingMemberships(data, token.id, unique.map((server) => server.uuid));
+      const currentToken = data.api_tokens.find((row) => row.id === token.id);
+      if (currentToken) {
+        const now = new Date().toISOString();
+        Object.assign(currentToken, {
+          validation_status: 'valid' as const, connection_status: failures.size ? 'degraded' as const : 'online' as const,
+          last_error_code: failures.size ? 'PARTIAL_SERVER_SYNC' : null,
+          last_error_message: failures.size ? `${failures.size} detail server gagal diperbarui; data cache sebelumnya dipertahankan.` : null,
+          last_validated_at: now, last_used_at: now, last_sync_at: now, updated_at: now,
+        });
+      }
+      const currentJob = data.sync_jobs.find((row) => row.id === job.id);
+      if (currentJob) {
+        currentJob.details = {
+          ...currentJob.details, serverCount: unique.length,
+          detailFailures: [...failures.entries()].map(([uuid, failure]) => ({ uuid, code: failure.code, message: failure.message })),
+        };
+        currentJob.updated_at = new Date().toISOString();
+      }
     });
   }
 
@@ -253,23 +294,35 @@ export class SyncService {
     const client = this.tokens.gatewayFor(token);
     try {
       const server = await client.getServer(job.server_uuid);
-      await this.db.withTransaction(async (query) => {
-        await persistServer(query, server);
-        await upsertMembership(query, token.id, job.server_uuid!);
+      await this.db.withTransaction(({ data }) => {
+        persistServer(data, server);
+        upsertMembership(data, token.id, job.server_uuid!);
       });
       await this.tokens.markSuccess(token.id, false);
     } catch (error) {
       if (error instanceof UpCloudApiError && error.upstreamStatus === 404) {
-        await this.db.withTransaction(async (query) => {
-          await query.query('UPDATE token_server_memberships SET active=FALSE WHERE token_id=$1 AND server_uuid=$2', [token.id, job.server_uuid]);
-          await query.query(
-            `UPDATE servers SET sync_status='not_found',last_error_message='Server tidak ditemukan melalui token terkait.',last_sync_attempt_at=now()
-             WHERE uuid=$1 AND NOT EXISTS (SELECT 1 FROM token_server_memberships WHERE server_uuid=$1 AND active=TRUE)`, [job.server_uuid]);
+        await this.db.withTransaction(({ data }) => {
+          const membership = data.token_server_memberships.find((row) => row.token_id === token.id && row.server_uuid === job.server_uuid);
+          if (membership) membership.active = false;
+          const stillVisible = data.token_server_memberships.some((row) => row.server_uuid === job.server_uuid && row.active);
+          const server = data.servers.find((row) => row.uuid === job.server_uuid);
+          if (server && !stillVisible) {
+            server.sync_status = 'not_found';
+            server.last_error_message = 'Server tidak ditemukan melalui token terkait.';
+            server.last_sync_attempt_at = new Date().toISOString();
+            server.updated_at = new Date().toISOString();
+          }
         });
       } else {
-        await this.db.query(
-          `UPDATE servers SET sync_status='error',last_error_message=$2,last_sync_attempt_at=now(),updated_at=now() WHERE uuid=$1`,
-          [job.server_uuid, sanitizeUpstreamMessage(error instanceof Error ? error.message : 'Sinkronisasi gagal.')]);
+        await this.db.withTransaction(({ data }) => {
+          const server = data.servers.find((row) => row.uuid === job.server_uuid);
+          if (server) {
+            server.sync_status = 'error';
+            server.last_error_message = sanitizeUpstreamMessage(error instanceof Error ? error.message : 'Sinkronisasi gagal.');
+            server.last_sync_attempt_at = new Date().toISOString();
+            server.updated_at = new Date().toISOString();
+          }
+        });
       }
       throw error;
     }
@@ -279,16 +332,16 @@ export class SyncService {
     if (!job.server_uuid || !job.token_id) throw new AppError(409, 'CONFLICT', 'Resource job sudah tidak tersedia.');
     const token = await this.tokens.requireRecord(job.token_id);
     const client = this.tokens.gatewayFor(token);
-    const action = json<Record<string, unknown>>(job.details, {}).action;
+    const action = job.details.action;
     if (!['start', 'stop', 'restart'].includes(String(action))) throw new AppError(400, 'BAD_REQUEST', 'Aksi server tidak valid.');
     const uuid = job.server_uuid;
     const response = action === 'start' ? await client.startServer(uuid)
       : action === 'stop' ? await client.stopServer(uuid) : await client.restartServer(uuid);
-    await this.db.withTransaction(async (query) => {
-      await persistServer(query, response, { syncStatus: 'degraded', error: 'Operasi diterima; menunggu verifikasi status target.' });
-      await upsertMembership(query, token.id, uuid);
+    await this.db.withTransaction(({ data }) => {
+      persistServer(data, response, { syncStatus: 'degraded', error: 'Operasi diterima; menunggu verifikasi status target.' });
+      upsertMembership(data, token.id, uuid);
     });
-    await this.db.query("UPDATE sync_jobs SET status='verifying',updated_at=now() WHERE id=$1", [job.id]);
+    await this.updateJob(job.id, { status: 'verifying' });
     await this.publish(job.id);
     const expected = action === 'stop' ? 'stopped' : 'started';
     const deadline = Date.now() + this.config.controlVerifyTimeoutMs;
@@ -297,11 +350,11 @@ export class SyncService {
       await sleep(this.config.controlVerifyIntervalMs);
       const current = await client.getServer(uuid);
       stableObservations = current.state === expected ? stableObservations + 1 : 0;
-      await this.db.withTransaction(async (query) => {
-        await persistServer(query, current, stableObservations >= 2 ? {} : {
+      await this.db.withTransaction(({ data }) => {
+        persistServer(data, current, stableObservations >= 2 ? {} : {
           syncStatus: 'degraded', error: `Menunggu status ${expected} terverifikasi.`,
         });
-        await upsertMembership(query, token.id, uuid);
+        upsertMembership(data, token.id, uuid);
       });
       this.events.publish({ type: 'server', payload: { uuid } });
       if (stableObservations >= 2) {
@@ -321,7 +374,7 @@ export class SyncService {
       id: row.id, type: row.job_type, status: row.status, tokenId: row.token_id, serverUuid: row.server_uuid,
       requestedBy: row.requested_by, trigger: row.trigger_type, attempts: row.attempts,
       error: row.error_message ? { code: row.error_code, message: row.error_message } : null,
-      details: json<Record<string, unknown>>(row.details, {}), createdAt: row.created_at,
+      details: row.details, createdAt: row.created_at,
       startedAt: row.started_at, finishedAt: row.finished_at, updatedAt: row.updated_at,
     };
   }
@@ -379,7 +432,11 @@ export class SyncScheduler {
 
   private async cleanup(): Promise<void> {
     const settings = await this.settings.get();
-    await this.db.query('DELETE FROM sessions WHERE expires_at < now()');
-    await this.db.query("DELETE FROM server_metrics WHERE sampled_at < now() - ($1::integer * interval '1 day')", [settings.metricsRetentionDays]);
+    await this.db.withTransaction(({ data }) => {
+      const now = Date.now();
+      data.sessions = data.sessions.filter((row) => new Date(row.expires_at).getTime() >= now);
+      const cutoff = now - settings.metricsRetentionDays * 24 * 60 * 60 * 1000;
+      data.server_metrics = data.server_metrics.filter((row) => new Date(row.sampled_at).getTime() >= cutoff);
+    });
   }
 }

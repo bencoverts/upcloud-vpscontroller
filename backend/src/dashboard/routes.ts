@@ -5,17 +5,16 @@ import { dashboardSummary } from '../servers/catalog.js';
 export function dashboardRoutes(db: Database): Router {
   const router = Router();
   router.get('/', async (_req, res) => {
-    const [summary, tokenCounts] = await Promise.all([
+    const [summary, tokens] = await Promise.all([
       dashboardSummary(db),
-      db.query<any>(`SELECT COUNT(*)::text AS total,COUNT(*) FILTER (WHERE enabled)::text AS enabled,
-        COUNT(*) FILTER (WHERE connection_status='degraded')::text AS degraded,
-        COUNT(*) FILTER (WHERE validation_status IN ('invalid','expired'))::text AS invalid FROM api_tokens`),
+      db.read((data) => ({
+        total: data.api_tokens.length,
+        enabled: data.api_tokens.filter((row) => row.enabled).length,
+        degraded: data.api_tokens.filter((row) => row.connection_status === 'degraded').length,
+        invalid: data.api_tokens.filter((row) => ['invalid', 'expired'].includes(row.validation_status)).length,
+      })),
     ]);
-    const tokens = tokenCounts.rows[0] ?? {};
-    res.json({ data: {
-      ...summary,
-      tokens: { total: Number(tokens.total ?? 0), enabled: Number(tokens.enabled ?? 0), degraded: Number(tokens.degraded ?? 0), invalid: Number(tokens.invalid ?? 0) },
-    } });
+    res.json({ data: { ...summary, tokens } });
   });
   return router;
 }

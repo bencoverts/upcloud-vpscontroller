@@ -73,8 +73,8 @@ describe('multi-token manager and server deduplication', () => {
       });
       expect(response.status).toBe(422);
       expect(response.text).not.toContain(tokenA);
-      const stored = await harness.db.query('SELECT id FROM api_tokens');
-      expect(stored.rowCount).toBe(0);
+      const stored = await harness.db.read((data) => data.api_tokens);
+      expect(stored).toHaveLength(0);
     } finally { await harness.close(); }
   });
 
@@ -102,16 +102,17 @@ describe('multi-token manager and server deduplication', () => {
         name: 'Encrypted token', token: tokenA, selectedServerUuids: [],
       });
       await waitForJob(harness, created.body.data.syncJob.id);
-      const stored = await harness.db.query<any>('SELECT ciphertext,iv,auth_tag FROM api_tokens WHERE id=$1', [created.body.data.id]);
-      expect(Buffer.from(stored.rows[0].ciphertext).toString('utf8')).not.toContain(tokenA);
-      expect(Buffer.from(stored.rows[0].iv).byteLength).toBe(12);
-      expect(Buffer.from(stored.rows[0].auth_tag).byteLength).toBe(16);
+      const stored = await harness.db.read((data) => data.api_tokens.find((row) => row.id === created.body.data.id));
+      expect(stored).toBeDefined();
+      expect(Buffer.from(stored!.ciphertext, 'base64').toString('utf8')).not.toContain(tokenA);
+      expect(Buffer.from(stored!.iv, 'base64').byteLength).toBe(12);
+      expect(Buffer.from(stored!.auth_tag, 'base64').byteLength).toBe(16);
       const rejected = await withCsrf(harness, harness.agent.delete(`/api/tokens/${created.body.data.id}`)).send({ confirmationName: 'wrong' });
       expect(rejected.status).toBe(400);
       const deleted = await withCsrf(harness, harness.agent.delete(`/api/tokens/${created.body.data.id}`)).send({ confirmationName: 'Encrypted token' });
       expect(deleted.status).toBe(200);
       expect(deleted.body.data.upstreamRevoked).toBe(false);
-      expect((await harness.db.query('SELECT id FROM api_tokens')).rowCount).toBe(0);
+      expect(await harness.db.read((data) => data.api_tokens)).toHaveLength(0);
     } finally { await harness.close(); }
   });
 });

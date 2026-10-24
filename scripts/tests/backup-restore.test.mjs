@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,130 +11,116 @@ const execFileAsync = promisify(execFile);
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const backupScript = path.join(rootDir, 'scripts', 'backup.mjs');
 const restoreScript = path.join(rootDir, 'scripts', 'restore.mjs');
-const databaseUrl = 'postgresql://panel:secret-password@db.example.test:5432/cerdasnet';
+const collections = [
+  'users', 'sessions', 'api_tokens', 'servers', 'token_server_memberships', 'token_server_groups',
+  'server_storage', 'server_networks', 'server_metrics', 'sync_jobs', 'audit_logs', 'app_settings',
+];
 
-const programs = {
-  pg_dump: `
-    if (process.env.FAKE_PG_DUMP_FAIL) {
-      process.stderr.write('connection failed for ' + process.env.DATABASE_URL);
-      process.exit(1);
-    }
-    process.stdout.write('PGDMP-node-test-backup');
-  `,
-  pg_restore: `
-    const fs = require('node:fs');
-    const args = process.argv.slice(2);
-    if (!args.includes('--list') && process.env.FAKE_RESTORE_MARKER) {
-      fs.writeFileSync(process.env.FAKE_RESTORE_MARKER, args.join(' '));
-    }
-    if (args.includes('--list') && args[args.length - 1] !== '--list' && !fs.existsSync(args[args.length - 1])) {
-      process.stderr.write('archive missing');
-      process.exit(1);
-    }
-  `,
-  pg_isready: '',
-  psql: `
-    const fs = require('node:fs');
-    if (process.env.FAKE_SCHEMA_MARKER) fs.writeFileSync(process.env.FAKE_SCHEMA_MARKER, process.argv.slice(2).join(' '));
-  `,
-};
+function database(marker) {
+  const now = new Date().toISOString();
+  return {
+    schemaVersion: 1, createdAt: now, updatedAt: now, nextMetricId: 1, nextAuditId: 1,
+    ...Object.fromEntries(collections.map((name) => [name, []])),
+    app_settings: [{ key: 'marker', value: marker, updated_at: now }],
+  };
+}
 
 async function fixture(t) {
-  const directory = await mkdtemp(path.join(tmpdir(), 'cerdasnet-node-scripts-'));
+  const directory = await mkdtemp(path.join(tmpdir(), 'cerdasnet-json-scripts-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const bin = path.join(directory, 'bin');
+  const databaseFile = path.join(directory, 'data', 'database.json');
   const backupDir = path.join(directory, 'backups');
-  await mkdir(bin);
-  for (const [name, source] of Object.entries(programs)) {
-    const executable = path.join(bin, name);
-    await writeFile(executable, `#!/usr/bin/env node\n${source}\n`);
-    await chmod(executable, 0o755);
-  }
+  await mkdir(path.dirname(databaseFile), { recursive: true });
+  await writeFile(databaseFile, `${JSON.stringify(database('original'), null, 2)}\n`, { mode: 0o600 });
   const env = {
-    ...process.env,
-    PATH: `${bin}${path.delimiter}${process.env.PATH}`,
-    COMPOSE: '0',
-    DATABASE_URL: databaseUrl,
-    BACKUP_DIR: backupDir,
+    ...process.env, DATA_FILE: databaseFile, BACKUP_DIR: backupDir,
+    APP_STOPPED: 'YES', RESTORE_CONFIRM: 'YES',
   };
-  delete env.APP_STOPPED;
-  delete env.RESTORE_CONFIRM;
-  delete env.FAKE_PG_DUMP_FAIL;
-  delete env.FAKE_RESTORE_MARKER;
-  delete env.FAKE_SCHEMA_MARKER;
-  return { directory, backupDir, env };
+  return { directory, databaseFile, backupDir, env };
 }
 
 async function backupFiles(directory) {
-  return (await readdir(directory)).filter((name) => name.endsWith('.dump')).sort();
+  return (await readdir(directory)).filter((name) => name.endsWith('.json')).sort();
 }
 
-test('Node backup writes a verified dump, checksum, and restrictive permissions', async (t) => {
+test('JSON backup writes a verified copy, checksum, and restrictive permissions', async (t) => {
   const { backupDir, env } = await fixture(t);
   const result = await execFileAsync(process.execPath, [backupScript], { env });
-  assert.match(result.stdout, /Backup created and catalog verified/);
+  assert.match(result.stdout, /JSON structure verified/);
   const files = await backupFiles(backupDir);
   assert.equal(files.length, 1);
   const archive = path.join(backupDir, files[0]);
-  assert.equal(await readFile(archive, 'utf8'), 'PGDMP-node-test-backup');
+  const stored = JSON.parse(await readFile(archive, 'utf8'));
+  assert.equal(stored.app_settings[0].value, 'original');
   const checksum = await readFile(`${archive}.sha256`, 'utf8');
   assert.match(checksum, /^[a-f0-9]{64} {2}/);
   assert.equal((await stat(archive)).mode & 0o777, 0o600);
   assert.equal((await stat(`${archive}.sha256`)).mode & 0o777, 0o600);
 });
 
-test('Node restore enforces guards, creates a safety backup, and verifies schema', async (t) => {
-  const { directory, backupDir, env } = await fixture(t);
+test('JSON restore enforces guards, creates a safety backup, and restores the selected snapshot', async (t) => {
+  const { databaseFile, backupDir, env } = await fixture(t);
   await execFileAsync(process.execPath, [backupScript], { env });
   const [first] = await backupFiles(backupDir);
   const archive = path.join(backupDir, first);
-  const restoreMarker = path.join(directory, 'restore-marker.txt');
-  const schemaMarker = path.join(directory, 'schema-marker.txt');
-  const guardedEnv = {
-    ...env,
-    APP_STOPPED: 'YES',
-    RESTORE_CONFIRM: 'YES',
-    FAKE_RESTORE_MARKER: restoreMarker,
-    FAKE_SCHEMA_MARKER: schemaMarker,
-  };
-  const result = await execFileAsync(process.execPath, [restoreScript, archive], { env: guardedEnv });
+  await writeFile(databaseFile, `${JSON.stringify(database('changed'), null, 2)}\n`);
+  const result = await execFileAsync(process.execPath, [restoreScript, archive], { env });
   assert.match(result.stdout, /pre-restore safety backup/);
-  assert.match(result.stdout, /Restore completed and required tables verified/);
+  assert.match(result.stdout, /Restore completed and JSON structure verified/);
   assert.equal((await backupFiles(backupDir)).length, 2);
-  assert.match(await readFile(restoreMarker, 'utf8'), /--single-transaction/);
-  assert.match(await readFile(schemaMarker, 'utf8'), /SELECT COUNT\(\*\) FROM servers/);
+  const restored = JSON.parse(await readFile(databaseFile, 'utf8'));
+  assert.equal(restored.app_settings[0].value, 'original');
 });
 
-test('Node restore refuses to run without explicit confirmations', async (t) => {
-  const { directory, env } = await fixture(t);
-  const archive = path.join(directory, 'input.dump');
-  await writeFile(archive, 'PGDMP-test');
+test('JSON restore refuses to run without explicit confirmations', async (t) => {
+  const { directory, databaseFile, env } = await fixture(t);
+  const archive = path.join(directory, 'input.json');
+  await writeFile(archive, JSON.stringify(database('archive')));
+  const before = await readFile(databaseFile, 'utf8');
+  await assert.rejects(
+    execFileAsync(process.execPath, [restoreScript, archive], { env: { ...env, RESTORE_CONFIRM: 'NO' } }),
+    (error) => { assert.match(error.stderr, /RESTORE_CONFIRM=YES/); return true; },
+  );
+  await assert.rejects(
+    execFileAsync(process.execPath, [restoreScript, archive], { env: { ...env, APP_STOPPED: 'NO' } }),
+    (error) => { assert.match(error.stderr, /APP_STOPPED=YES/); return true; },
+  );
+  assert.equal(await readFile(databaseFile, 'utf8'), before);
+});
+
+test('JSON restore rejects a corrupt archive without changing the current database', async (t) => {
+  const { directory, databaseFile, env } = await fixture(t);
+  const archive = path.join(directory, 'broken.json');
+  await writeFile(archive, '{broken-json');
+  const before = await readFile(databaseFile, 'utf8');
   await assert.rejects(
     execFileAsync(process.execPath, [restoreScript, archive], { env }),
-    (error) => {
-      assert.match(error.stderr, /RESTORE_CONFIRM=YES/);
-      return true;
-    },
+    (error) => { assert.match(error.stderr, /Invalid JSON/); return true; },
   );
-  await assert.rejects(
-    execFileAsync(process.execPath, [restoreScript, archive], { env: { ...env, RESTORE_CONFIRM: 'YES' } }),
-    (error) => {
-      assert.match(error.stderr, /APP_STOPPED=YES/);
-      return true;
-    },
-  );
+  assert.equal(await readFile(databaseFile, 'utf8'), before);
 });
 
-test('Node tooling redacts database credentials from child-process errors', async (t) => {
-  const { env } = await fixture(t);
-  env.FAKE_PG_DUMP_FAIL = '1';
+test('JSON restore rejects a checksum mismatch without changing the current database', async (t) => {
+  const { databaseFile, backupDir, env } = await fixture(t);
+  await execFileAsync(process.execPath, [backupScript], { env });
+  const archive = path.join(backupDir, (await backupFiles(backupDir))[0]);
+  await writeFile(archive, JSON.stringify(database('tampered')));
+  const before = await readFile(databaseFile, 'utf8');
   await assert.rejects(
-    execFileAsync(process.execPath, [backupScript], { env }),
-    (error) => {
-      assert.doesNotMatch(error.stderr, /secret-password/);
-      assert.doesNotMatch(error.stderr, /db\.example\.test/);
-      assert.match(error.stderr, /\[redacted\]/);
-      return true;
-    },
+    execFileAsync(process.execPath, [restoreScript, archive], { env }),
+    (error) => { assert.match(error.stderr, /checksum does not match/); return true; },
   );
+  assert.equal(await readFile(databaseFile, 'utf8'), before);
+});
+
+test('JSON restore refuses to replace a database held by a running panel process', async (t) => {
+  const { databaseFile, backupDir, env } = await fixture(t);
+  await execFileAsync(process.execPath, [backupScript], { env });
+  const archive = path.join(backupDir, (await backupFiles(backupDir))[0]);
+  await writeFile(`${databaseFile}.lock`, JSON.stringify({ pid: process.pid, token: 'test-lock' }));
+  await assert.rejects(
+    execFileAsync(process.execPath, [restoreScript, archive], { env }),
+    (error) => { assert.match(error.stderr, /still in use/); return true; },
+  );
+  assert.equal(JSON.parse(await readFile(databaseFile, 'utf8')).app_settings[0].value, 'original');
 });

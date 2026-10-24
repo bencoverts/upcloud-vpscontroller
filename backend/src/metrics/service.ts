@@ -1,4 +1,5 @@
 import type { Database } from '../db/index.js';
+import type { DatabaseData, MetricRecord } from '../db/types.js';
 import { AppError, sanitizeUpstreamMessage } from '../lib/errors.js';
 import { parseMetricValue } from '../upcloud/normalize.js';
 import type { UpCloudStatsSummary } from '../upcloud/types.js';
@@ -11,14 +12,13 @@ const rangeMilliseconds: Record<MetricRange, number> = {
   '24h': 24 * 60 * 60_000, '7d': 7 * 24 * 60 * 60_000,
 };
 
-type MetricRow = {
-  id: string; server_uuid: string; sampled_at: Date; source_period: string;
-  cpu_percent: number | null; disk_read_bytes_per_second: number | null;
-  disk_write_bytes_per_second: number | null; network_in_bits_per_second: number | null;
-  network_out_bits_per_second: number | null; raw_summary: any;
-};
+function latestRecord(data: DatabaseData, serverUuid: string): MetricRecord | undefined {
+  return data.server_metrics
+    .filter((row) => row.server_uuid === serverUuid)
+    .sort((left, right) => right.sampled_at.localeCompare(left.sampled_at) || Number(right.id) - Number(left.id))[0];
+}
 
-function metricDto(row: MetricRow) {
+function metricDto(row: MetricRecord) {
   return {
     sampledAt: row.sampled_at, sourcePeriod: row.source_period,
     cpuPercent: row.cpu_percent === null ? null : Number(row.cpu_percent),
@@ -39,8 +39,8 @@ export class MetricsService {
   constructor(private readonly db: Database, private readonly tokens: TokenService, private readonly settings: SettingsService) {}
 
   async latest(serverUuid: string): Promise<ReturnType<typeof metricDto> | null> {
-    const result = await this.db.query<MetricRow>('SELECT * FROM server_metrics WHERE server_uuid=$1 ORDER BY sampled_at DESC LIMIT 1', [serverUuid]);
-    return result.rows[0] ? metricDto(result.rows[0]) : null;
+    const row = await this.db.read((data) => latestRecord(data, serverUuid));
+    return row ? metricDto(row) : null;
   }
 
   async refresh(serverUuid: string, force = false) {
@@ -53,8 +53,7 @@ export class MetricsService {
 
   private async performRefresh(serverUuid: string, force: boolean) {
     const settings = await this.settings.get();
-    const latestRow = await this.db.query<MetricRow>('SELECT * FROM server_metrics WHERE server_uuid=$1 ORDER BY sampled_at DESC LIMIT 1', [serverUuid]);
-    const latest = latestRow.rows[0];
+    const latest = await this.db.read((data) => latestRecord(data, serverUuid));
     const freshnessSeconds = force ? Math.min(15, settings.metricsRefreshSeconds) : settings.metricsRefreshSeconds;
     if (latest && Date.now() - new Date(latest.sampled_at).getTime() < freshnessSeconds * 1000) {
       return { sample: metricDto(latest), cached: true, partial: this.hasErrors(latest) };
@@ -94,21 +93,27 @@ export class MetricsService {
       errors: failures,
       note: 'Values retrieved from UpCloud daily summary; sampled_at is the panel retrieval time.',
     };
-    const inserted = await this.db.query<MetricRow>(
-      `INSERT INTO server_metrics(
-        server_uuid,source_period,cpu_percent,disk_read_bytes_per_second,disk_write_bytes_per_second,
-        network_in_bits_per_second,network_out_bits_per_second,raw_summary
-      ) VALUES ($1,'daily',$2,$3,$4,$5,$6,$7::jsonb) RETURNING *`,
-      [serverUuid, values.cpu, values.diskRead, values.diskWrite, values.networkIn, values.networkOut, JSON.stringify(rawSummary)]);
-    return { sample: metricDto(inserted.rows[0]!), cached: false, partial: failures.length > 0 };
+    return this.db.withTransaction(({ data }) => {
+      if (!data.servers.some((row) => row.uuid === serverUuid)) throw new AppError(404, 'NOT_FOUND', 'Server tidak ditemukan.');
+      const now = new Date().toISOString();
+      const inserted: MetricRecord = {
+        id: String(data.nextMetricId++), server_uuid: serverUuid, sampled_at: now, source_period: 'daily',
+        cpu_percent: values.cpu, disk_read_bytes_per_second: values.diskRead,
+        disk_write_bytes_per_second: values.diskWrite, network_in_bits_per_second: values.networkIn,
+        network_out_bits_per_second: values.networkOut, raw_summary: rawSummary, created_at: now,
+      };
+      data.server_metrics.push(inserted);
+      return { sample: metricDto(inserted), cached: false, partial: failures.length > 0 };
+    });
   }
 
   async history(serverUuid: string, range: MetricRange) {
-    const cutoff = new Date(Date.now() - rangeMilliseconds[range]);
-    const result = await this.db.query<MetricRow>(
-      'SELECT * FROM server_metrics WHERE server_uuid=$1 AND sampled_at>=$2 ORDER BY sampled_at ASC LIMIT 20000',
-      [serverUuid, cutoff]);
-    const allPoints = result.rows.map(metricDto);
+    const cutoff = Date.now() - rangeMilliseconds[range];
+    const rows = await this.db.read((data) => data.server_metrics
+      .filter((row) => row.server_uuid === serverUuid && new Date(row.sampled_at).getTime() >= cutoff)
+      .sort((left, right) => left.sampled_at.localeCompare(right.sampled_at) || Number(left.id) - Number(right.id))
+      .slice(0, 20_000));
+    const allPoints = rows.map(metricDto);
     const points = this.downsample(allPoints, 600);
     const latest = allPoints.at(-1) ?? await this.latest(serverUuid);
     return {
@@ -141,7 +146,7 @@ export class MetricsService {
     };
   }
 
-  private downsample<T extends { sampledAt: Date }>(points: T[], maximum: number): T[] {
+  private downsample<T extends { sampledAt: string }>(points: T[], maximum: number): T[] {
     if (points.length <= maximum) return points;
     const start = new Date(points[0]!.sampledAt).getTime();
     const end = new Date(points.at(-1)!.sampledAt).getTime();
@@ -154,8 +159,7 @@ export class MetricsService {
     return [...buckets.entries()].sort(([left], [right]) => left - right).map(([, point]) => point);
   }
 
-  private hasErrors(row: MetricRow): boolean {
-    const raw = typeof row.raw_summary === 'string' ? JSON.parse(row.raw_summary) : row.raw_summary;
-    return Array.isArray(raw?.errors) && raw.errors.length > 0;
+  private hasErrors(row: MetricRecord): boolean {
+    return Array.isArray(row.raw_summary.errors) && row.raw_summary.errors.length > 0;
   }
 }

@@ -9,9 +9,9 @@ npm test
 npm run build
 ```
 
-Backend integration tests menggunakan database PGlite disposable yang menjalankan SQL migrations, constraints, encryption, Argon2id/session flow, HTTP routes, sync workers, dan control verification. Hanya external UpCloud gateway/fetch boundary yang di-fake. Frontend tests menggunakan jsdom dan mocked panel API untuk memeriksa perilaku UI. `npm run test:scripts` menjalankan Node.js built-in test runner untuk backup/restore dengan executable PostgreSQL palsu khusus test; test tersebut juga termasuk dalam `npm test`.
+Backend integration tests menggunakan file JSON disposable yang menjalankan persistence/rollback, integrity checks, encryption, Argon2id/session flow, HTTP routes, sync workers, dan control verification. Hanya external UpCloud gateway/fetch boundary yang di-fake. Frontend tests menggunakan jsdom dan mocked panel API. `npm run test:scripts` menjalankan Node.js built-in test runner untuk backup/restore JSON dengan file fixture lokal; test tersebut juga termasuk dalam `npm test`.
 
-Test ini tidak membuktikan kompatibilitas penuh PostgreSQL production, Docker restart behavior, nginx SSE, atau respons live UpCloud. Pisahkan klaim hasil test lokal dari validasi lingkungan tersebut.
+Test ini tidak membuktikan perilaku filesystem production, Docker restart, PM2 startup, nginx SSE, atau respons live UpCloud. Pisahkan klaim hasil test lokal dari validasi lingkungan tersebut.
 
 ## Test coverage
 
@@ -20,6 +20,20 @@ npm run test:coverage
 ```
 
 Coverage bukan pengganti review keamanan atau live contract test. Jangan menurunkan dependency untuk mengabaikan audit vulnerability.
+
+## Smoke test entry point production
+
+Setelah build dan konfigurasi test yang aman:
+
+```bash
+node server.js
+# Dari terminal lain:
+curl --fail http://127.0.0.1:3000/health/live
+curl --fail http://127.0.0.1:3000/health/ready
+curl --fail http://127.0.0.1:3000/
+```
+
+Verifikasi database yang digunakan adalah `DATA_FILE` test, lalu hentikan proses. Untuk PM2, uji `pm2 start ecosystem.config.cjs`, restart, stop, dan start setelah reboot pada staging. Pastikan hanya satu proses fork yang menggunakan file tersebut.
 
 ## Live UpCloud — read-only secara default
 
@@ -50,9 +64,9 @@ npm --prefix backend run test:live
 
 Test menolak state awal selain `started/stopped`, menunggu observasi state, dan mencoba mengembalikan state awal pada `finally`. Ini tetap operasi nyata; gunakan hanya VPS disposable/nonproduksi. Jangan menjadikan power test sebagai CI routine tanpa isolasi dan persetujuan.
 
-## Docker/PostgreSQL validation checklist
+## Docker/JSON validation checklist
 
-Jalankan pada staging dengan Docker dan PostgreSQL nyata:
+Jalankan pada staging:
 
 ```bash
 docker compose config
@@ -61,10 +75,10 @@ docker compose ps
 curl --fail http://127.0.0.1:3000/health/live
 curl --fail http://127.0.0.1:3000/health/ready
 npm run test:scripts
-COMPOSE=1 node scripts/backup.mjs
+docker compose exec app node scripts/backup.mjs
 ```
 
-Kemudian verifikasi migrasi idempotent saat restart, scheduler tidak membuat duplicate active jobs, SSE melewati reverse proxy, serta cookie Secure melalui HTTPS. Restore drill harus dilakukan pada database staging terpisah.
+Kemudian verifikasi data tetap ada saat restart, scheduler tidak membuat duplicate active jobs, SSE melewati reverse proxy, serta cookie Secure melalui HTTPS. Restore drill harus dilakukan pada file/volume staging terpisah.
 
 Untuk recovery test pada staging, hentikan proses saat **sync** berjalan dan pastikan job berubah failed saat restart. Jangan sengaja mematikan proses di tengah power operation pada VPS production; desain recovery menandai interrupted job failed dan tidak memutar ulang power request.
 
@@ -74,8 +88,8 @@ Playwright tersedia untuk smoke test terhadap deployment yang sudah berjalan. Gu
 
 ## Bukti yang perlu dicatat saat rilis
 
-- Versi commit/image dan hasil typecheck/lint/unit/integration/build.
-- Versi PostgreSQL/Docker, migration list, readiness, dan reverse-proxy check.
+- Versi commit/image, Node.js/PM2, dan hasil typecheck/lint/unit/integration/build.
+- `schemaVersion` JSON, readiness, lock single-process, dan reverse-proxy check.
 - Backup archive + hash serta tanggal restore drill terakhir.
 - Waktu dan cakupan live read-only test tanpa mencatat token.
 - Otorisasi eksplisit dan hasil power test bila memang dilakukan pada nonproduksi.

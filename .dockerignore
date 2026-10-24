@@ -10,7 +10,7 @@
 **/test-results
 **/*.tsbuildinfo
 backups
+data
 *.log
 README.md
 docs
-scripts

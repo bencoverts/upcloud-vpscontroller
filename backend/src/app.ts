@@ -47,8 +47,8 @@ export function createApplication(input: { config: AppConfig; db: Database; upcl
   app.get('/health/live', (_req, res) => { res.json({ status: 'ok' }); });
   app.get('/health/ready', async (_req, res) => {
     try {
-      await db.query('SELECT 1');
-      res.json({ status: 'ready', database: 'ok' });
+      await db.checkHealth();
+      res.json({ status: 'ready', database: 'ok', storage: 'json' });
     } catch {
       res.status(503).json({ status: 'not_ready', database: 'unavailable' });
     }

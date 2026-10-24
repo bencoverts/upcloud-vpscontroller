@@ -10,6 +10,7 @@ test-results/
 *.pem
 *.key
 backups/
+data/
 .DS_Store
 .vite/
 *.tsbuildinfo
