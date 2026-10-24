@@ -26,6 +26,29 @@ describe('panel authentication and authorization', () => {
     } finally { await harness.close(); }
   });
 
+  it('accepts a same-origin request through a proxy and rejects a cross-site origin', async () => {
+    const harness = await createHarness({ trustProxy: 1 });
+    try {
+      const anonymous = supertest.agent(harness.app);
+      const login = await anonymous.post('/api/auth/login')
+        .set('Host', '3100-preview.example.test')
+        .set('X-Forwarded-Proto', 'https')
+        .set('Origin', 'https://3100-preview.example.test')
+        .set('Sec-Fetch-Site', 'same-origin')
+        .send({ username: 'admin', password: 'TestPassword123!' });
+      expect(login.status).toBe(200);
+
+      const rejected = await anonymous.post('/api/auth/login')
+        .set('Host', '3100-preview.example.test')
+        .set('X-Forwarded-Proto', 'https')
+        .set('Origin', 'https://attacker.example.test')
+        .set('Sec-Fetch-Site', 'same-origin')
+        .send({ username: 'admin', password: 'TestPassword123!' });
+      expect(rejected.status).toBe(403);
+      expect(rejected.body.error.code).toBe('CSRF_INVALID');
+    } finally { await harness.close(); }
+  });
+
   it('allows viewers to read but rejects all viewer mutations', async () => {
     const harness = await createHarness();
     try {

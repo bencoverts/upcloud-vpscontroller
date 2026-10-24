@@ -119,6 +119,8 @@ Jalankan validasi konfigurasi yang disediakan control panel/nginx sebelum reload
 
 `TRUST_PROXY=1` sesuai satu reverse proxy lokal. Jika ada CDN tambahan, hitung trusted hops dengan benar; jangan memakai trust proxy berlebihan karena memengaruhi IP rate limit/audit.
 
+Origin guard menerima `APP_ORIGIN` atau origin yang sama dengan `Host` dan protocol request. Karena itu reverse proxy harus meneruskan `Host` dan `X-Forwarded-Proto` dengan benar. Origin lintas situs tetap ditolak; perubahan ini tidak menggantikan CSRF token untuk mutasi yang sudah login.
+
 ## 6. Update aplikasi
 
 ```bash
