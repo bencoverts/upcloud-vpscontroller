@@ -52,7 +52,11 @@ export function originGuard(config: AppConfig) {
     const origin = req.get('origin');
     if (origin) {
       try {
-        if (new URL(origin).origin !== expectedOrigin) throw new Error('origin mismatch');
+        const actualOrigin = new URL(origin).origin;
+        const host = req.get('host');
+        // Also accept the public same-origin Host/proto seen through a trusted reverse proxy.
+        const sameRequestOrigin = host ? new URL(`${req.protocol}://${host}`).origin : null;
+        if (actualOrigin !== expectedOrigin && actualOrigin !== sameRequestOrigin) throw new Error('origin mismatch');
       } catch {
         return next(new AppError(403, 'CSRF_INVALID', 'Origin request tidak diizinkan.'));
       }
