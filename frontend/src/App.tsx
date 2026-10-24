@@ -12,6 +12,10 @@ const TokenManagerPage = lazy(() => import('./pages/TokenManagerPage'));
 const MonitoringPage = lazy(() => import('./pages/MonitoringPage'));
 const ActivityPage = lazy(() => import('./pages/ActivityPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
+const DeployPage = lazy(() => import('./pages/DeployPage'));
+const ApiKeysPage = lazy(() => import('./pages/ApiKeysPage'));
+const ProxmoxPage = lazy(() => import('./pages/ProxmoxPage'));
+const DocsPage = lazy(() => import('./pages/DocsPage'));
 const UsersPage = lazy(() => import('./pages/UsersPage'));
 
 function LoadingScreen() {
@@ -28,6 +32,10 @@ export default function App() {
       <Route path="servers" element={<ServersPage />} />
       <Route path="servers/:uuid" element={<ServerDetailPage />} />
       <Route path="tokens" element={user.role === 'admin' ? <TokenManagerPage /> : <Navigate to="/" replace />} />
+      <Route path="deploy" element={<DeployPage />} />
+      <Route path="api-keys" element={<ApiKeysPage />} />
+      <Route path="proxmox" element={user.role === 'admin' ? <ProxmoxPage /> : <Navigate to="/" replace />} />
+      <Route path="docs" element={<DocsPage />} />
       <Route path="monitoring" element={<MonitoringPage />} />
       <Route path="activity" element={user.role === 'admin' ? <ActivityPage /> : <Navigate to="/" replace />} />
       <Route path="users" element={user.role === 'admin' ? <UsersPage /> : <Navigate to="/" replace />} />

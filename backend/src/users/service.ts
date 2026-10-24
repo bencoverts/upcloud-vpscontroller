@@ -14,7 +14,7 @@ export class UserService {
       .filter((user) => user.role === 'client')
       .sort((left, right) => left.username.localeCompare(right.username))
       .map((user) => ({
-        id: user.id, username: user.username, role: user.role, disabled: user.disabled,
+        id: user.id, username: user.username, email: user.email, role: user.role, disabled: user.disabled,
         createdAt: user.created_at, updatedAt: user.updated_at,
         access: data.client_server_access.filter((row) => row.user_id === user.id).map((row) => {
           const server = data.servers.find((item) => item.uuid === row.server_uuid);
@@ -29,16 +29,17 @@ export class UserService {
       })));
   }
 
-  async createClient(input: { username: string; password: string }) {
+  async createClient(input: { username: string; password: string; email?: string | null }) {
     const id = randomId();
     const passwordHash = await hashPassword(input.password);
     await this.db.withTransaction(({ data }) => {
+      if (input.email && data.users.some((user) => user.email?.toLowerCase() === input.email!.toLowerCase())) throw new AppError(409, 'CONFLICT', 'Email sudah digunakan akun lain.');
       if (data.users.some((user) => user.username.toLowerCase() === input.username.toLowerCase())) {
         throw new AppError(409, 'CONFLICT', 'Username sudah digunakan.');
       }
       const now = new Date().toISOString();
       data.users.push({
-        id, username: input.username, password_hash: passwordHash, role: 'client', disabled: false,
+        id, username: input.username, email: input.email ?? null, display_name: null, password_hash: passwordHash, role: 'client', disabled: false,
         created_at: now, updated_at: now,
       });
     });
@@ -46,13 +47,15 @@ export class UserService {
     return (await this.listClients()).find((user) => user.id === id)!;
   }
 
-  async updateClient(id: string, input: { password?: string; disabled?: boolean }) {
+  async updateClient(id: string, input: { password?: string; disabled?: boolean; email?: string | null }) {
     const passwordHash = input.password ? await hashPassword(input.password) : null;
     await this.db.withTransaction(({ data }) => {
       const user = data.users.find((row) => row.id === id && row.role === 'client');
       if (!user) throw new AppError(404, 'NOT_FOUND', 'Akun client tidak ditemukan.');
+      if (input.email && data.users.some((row) => row.id !== id && row.email?.toLowerCase() === input.email!.toLowerCase())) throw new AppError(409, 'CONFLICT', 'Email sudah digunakan akun lain.');
       if (passwordHash) user.password_hash = passwordHash;
       if (input.disabled !== undefined) user.disabled = input.disabled;
+      if (input.email !== undefined) user.email = input.email;
       user.updated_at = new Date().toISOString();
       if (passwordHash || input.disabled === true) data.sessions = data.sessions.filter((session) => session.user_id !== id);
     });

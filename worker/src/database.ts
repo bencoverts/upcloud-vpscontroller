@@ -23,6 +23,7 @@ export class DurableObjectDatabase implements Database {
       data = createEmptyDatabase({
         syncIntervalSeconds: config.syncIntervalSeconds, serverPollSeconds: config.serverPollSeconds,
         metricsRefreshSeconds: config.metricsRefreshSeconds, metricsRetentionDays: config.metricsRetentionDays,
+        siteName: config.siteName, siteTagline: config.siteTagline,
       });
       await bucket.put(OBJECT_KEY, `${JSON.stringify(data, null, 2)}\n`);
     }

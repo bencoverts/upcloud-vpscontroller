@@ -11,6 +11,11 @@ import { AgentService } from './metrics/agent.js';
 import { SettingsService } from './settings/service.js';
 import { AuthService } from './auth/service.js';
 import { UserService } from './users/service.js';
+import { LifecycleService } from './servers/lifecycle.js';
+import { GoogleAuthService } from './auth/google.js';
+import { ProxmoxService } from './proxmox/service.js';
+import { BrandingService } from './branding/service.js';
+import { PanelApiKeyService } from './api-keys/service.js';
 
 export function createServices(input: {
   config: AppConfig;
@@ -30,8 +35,13 @@ export function createServices(input: {
   const metrics = new MetricsService(db, tokens, settings, events);
   const agents = new AgentService(db, metrics);
   const auth = new AuthService(db, config);
+  const google = new GoogleAuthService(db, config, auth);
   const users = new UserService(db, events);
-  return { config, db, events, cipher, tokens, sync, settings, metrics, agents, auth, users };
+  const proxmox = new ProxmoxService(db, cipher, events);
+  const branding = new BrandingService(db, config);
+  const apiKeys = new PanelApiKeyService(db);
+  const lifecycle = new LifecycleService(db, tokens, sync);
+  return { config, db, events, cipher, tokens, sync, settings, metrics, agents, auth, google, users, lifecycle, apiKeys, branding, proxmox };
 }
 
 export type ApplicationServices = ReturnType<typeof createServices>;

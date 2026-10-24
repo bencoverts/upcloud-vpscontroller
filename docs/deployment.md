@@ -15,6 +15,8 @@ Prinsip jaringan:
 
 ## 2. Konfigurasi rahasia
 
+Untuk instalasi baru, `npm run setup` dapat menggantikan konfigurasi manual pada bagian ini sekaligus build dan bootstrap pada bagian berikutnya. Ikuti bagian manual ini bila ingin menyiapkan `.env` sendiri atau mempertahankan konfigurasi instalasi yang sudah ada.
+
 ```bash
 cp .env.example .env
 chmod 600 .env
@@ -29,22 +31,25 @@ openssl rand -hex 32
 | `COOKIE_SECURE` | `true` untuk HTTPS production; `false` hanya untuk uji HTTP lokal |
 | `TRUST_PROXY` | Jumlah trusted proxy hop; biasanya `1` untuk reverse proxy lokal |
 | `METRICS_REFRESH_SECONDS` | Default/saran `300`; daily summary tidak menjamin berubah lebih sering |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM` | SMTP opsional; password hanya melalui secret environment/file `.env` berpermission ketat |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google OIDC opsional; redirect URI adalah `${APP_ORIGIN}/api/auth/google/callback` |
 
 `server.js`, bootstrap admin, dan backup/restore membaca `.env` tanpa menimpa environment yang sudah diset. Jangan commit `.env`. Jangan memasukkan UpCloud token atau permanent `ADMIN_PASSWORD` ke file ini. Rotasi `TOKEN_ENCRYPTION_KEY` memerlukan migrasi ciphertext yang disengaja; menggantinya begitu saja membuat token lama tidak dapat didekripsi.
 
 ## 3. Install, build, dan bootstrap
 
-`npm run setup` memasang dependency root, backend, dan frontend dengan `npm ci --include=dev`. Dev dependency seperti TypeScript dan `@types/node` wajib tersedia saat build; jangan memakai `--omit=dev` sebelum build meskipun `NODE_ENV=production`.
+`npm run setup:install` memasang dependency root, backend, dan frontend dengan `npm ci --include=dev` tanpa mengubah `.env`. Wizard `npm run setup` juga melakukan instalasi ini pada setup awal. Dev dependency seperti TypeScript dan `@types/node` wajib tersedia saat build; jangan memakai `--omit=dev` sebelum build meskipun `NODE_ENV=production`.
 
 ```bash
-npm run setup
+npm run setup:install
 npm run build
 
 read -rp "Admin username: " ADMIN_USERNAME
 read -rsp "Admin password: " ADMIN_PASSWORD; echo
-export ADMIN_USERNAME ADMIN_PASSWORD
+read -rp "Admin email (opsional): " ADMIN_EMAIL
+export ADMIN_USERNAME ADMIN_PASSWORD ADMIN_EMAIL
 npm run bootstrap:admin
-unset ADMIN_USERNAME ADMIN_PASSWORD
+unset ADMIN_USERNAME ADMIN_PASSWORD ADMIN_EMAIL
 ```
 
 Bootstrap gagal jika user sudah ada; tidak ada default admin/password. Database beserta direktori induknya dibuat otomatis dengan permission ketat.
@@ -89,7 +94,7 @@ upstream cerdasnet_panel {
 }
 
 # Di dalam server HTTPS yang sudah dikelola CloudPanel/nginx:
-client_max_body_size 64k;
+client_max_body_size 1m; # Sesuai batas backend, termasuk upload logo/favicon base64.
 
 location = /api/events {
     proxy_pass http://cerdasnet_panel;
@@ -126,7 +131,7 @@ Origin guard menerima `APP_ORIGIN` atau origin yang sama dengan `Host` dan proto
 
 ```bash
 node scripts/backup.mjs
-npm run setup
+npm run setup:install
 npm run build
 pm2 restart cerdasnet-vps-control
 curl --fail http://127.0.0.1:3000/health/ready
@@ -148,7 +153,7 @@ Bootstrap menggunakan environment interaktif yang sama:
 
 ```bash
 docker compose run --rm --no-deps \
-  -e ADMIN_USERNAME -e ADMIN_PASSWORD \
+  -e ADMIN_USERNAME -e ADMIN_PASSWORD -e ADMIN_EMAIL \
   app node scripts/bootstrap-admin.mjs
 ```
 

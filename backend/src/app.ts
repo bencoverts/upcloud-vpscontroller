@@ -18,6 +18,13 @@ import { dashboardRoutes } from './dashboard/routes.js';
 import { userRoutes } from './users/routes.js';
 import { backupRoutes } from './backup/routes.js';
 import { agentRoutes } from './metrics/routes.js';
+import { SmtpService } from './integrations/smtp.js';
+import { integrationRoutes } from './integrations/routes.js';
+import { proxmoxRoutes } from './proxmox/routes.js';
+import { docsRoutes } from './docs/routes.js';
+import { brandingRoutes, publicBrandingRoutes } from './branding/routes.js';
+import { apiKeyRoutes } from './api-keys/routes.js';
+import { lifecycleRoutes } from './servers/lifecycle-routes.js';
 import { errorHandler, notFoundHandler } from './http/error.js';
 
 export function createApplication(input: { config: AppConfig; db: Database; upcloudFactory?: UpCloudGatewayFactory }) {
@@ -25,13 +32,14 @@ export function createApplication(input: { config: AppConfig; db: Database; upcl
   const logger = createLogger(config);
   const services = createServices({ config, db, upcloudFactory: input.upcloudFactory, logger });
   const { tokens, sync, settings, metrics, agents, auth, users } = services;
+  const smtp = new SmtpService(config);
 
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', config.trustProxy);
   app.use(helmet({ crossOriginEmbedderPolicy: false }));
   app.use(createHttpLogger(config, logger));
-  app.use(express.json({ limit: '32kb', strict: true }));
+  app.use(express.json({ limit: '1mb', strict: true }));
   app.use(cookieParser());
 
   app.get('/health/live', (_req, res) => { res.json({ status: 'ok' }); });
@@ -51,9 +59,10 @@ export function createApplication(input: { config: AppConfig; db: Database; upcl
     standardHeaders: 'draft-8', legacyHeaders: false,
     message: { error: { code: 'RATE_LIMITED', message: 'Terlalu banyak request ke panel. Coba lagi beberapa saat.' } },
   }));
-  api.use('/auth', authRoutes(db, auth, config));
+  api.use('/branding', publicBrandingRoutes(services.branding));
+  api.use('/auth', authRoutes(db, auth, config, services.google));
   api.use('/agent', agentRoutes(agents));
-  api.use(requireAuth(auth, config));
+  api.use(requireAuth(auth, config, services.apiKeys));
   api.use(requireCsrf);
   api.use('/dashboard', dashboardRoutes(db));
   api.use('/tokens', requireAdmin, tokenRoutes(db, tokens, sync));
@@ -63,6 +72,12 @@ export function createApplication(input: { config: AppConfig; db: Database; upcl
   api.use('/activity', requireAdmin, activityRoutes(db, sync));
   api.use('/users', requireAdmin, userRoutes(db, users));
   api.use('/backup', requireAdmin, backupRoutes(db));
+  api.use('/api-keys', apiKeyRoutes(db, services.apiKeys));
+  api.use('/branding', requireAdmin, brandingRoutes(db, services.branding));
+  api.use('/docs', docsRoutes(config.appOrigin));
+  api.use('/proxmox', requireAdmin, proxmoxRoutes(db, services.proxmox));
+  api.use('/integrations', requireAdmin, integrationRoutes(db, smtp, services.branding));
+  api.use('/', lifecycleRoutes(db, services.lifecycle));
   api.get('/events', (_req, res) => {
     res.status(426).json({ error: { code: 'WEBSOCKET_REQUIRED', message: 'Gunakan WebSocket untuk realtime event.' } });
   });

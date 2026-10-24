@@ -12,6 +12,10 @@ const metricSchema = z.object({
   memoryUsedBytes: nullableByteCount, memoryTotalBytes: nullableByteCount,
   swapUsedBytes: nullableByteCount, swapTotalBytes: nullableByteCount,
   osUptimeSeconds: z.number().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable(),
+  load1: z.number().nonnegative().max(1_000_000).nullable().optional(), load5: z.number().nonnegative().max(1_000_000).nullable().optional(),
+  load15: z.number().nonnegative().max(1_000_000).nullable().optional(), processCount: z.number().int().min(1).max(10_000_000).nullable().optional(),
+  filesystems: z.array(z.object({ source: z.string().max(255), mount: z.string().max(1024), totalBytes: byteCount, usedBytes: byteCount })).max(64).optional(),
+  osName: z.string().max(200).nullable().optional(), agentVersion: z.string().max(20).optional(),
 }).superRefine((value, context) => {
   for (const [used, total, name] of [
     [value.filesystemUsedBytes, value.filesystemTotalBytes, 'filesystem'],

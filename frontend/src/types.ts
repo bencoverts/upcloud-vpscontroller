@@ -32,7 +32,7 @@ export type Token = {
   syncNotice?: string;
 };
 export type SyncJob = {
-  id: string; type: 'token_sync' | 'server_sync' | 'server_control'; status: string;
+  id: string; type: 'token_sync' | 'server_sync' | 'server_control' | 'server_rebuild' | 'server_deploy'; status: string;
   tokenId: string | null; serverUuid: string | null; requestedBy: string | null; trigger: string; attempts: number;
   error: { code: string | null; message: string } | null; details: Record<string, any>;
   createdAt: string; startedAt: string | null; finishedAt: string | null; updatedAt: string;
@@ -73,7 +73,7 @@ export type ClientAccess = {
   expiresAt: string | null; expired: boolean; createdAt: string; updatedAt: string;
 };
 export type ClientUser = {
-  id: string; username: string; role: 'client'; disabled: boolean;
+  id: string; username: string; email: string | null; role: 'client'; disabled: boolean;
   createdAt: string; updatedAt: string; access: ClientAccess[];
 };
 export type AgentStatus = { configured: boolean; label: string | null; lastSeenAt: string | null };

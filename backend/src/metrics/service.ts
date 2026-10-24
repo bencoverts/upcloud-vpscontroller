@@ -12,6 +12,9 @@ export type AgentMetricInput = {
   filesystemUsedBytes: number; filesystemTotalBytes: number; filesystemCount: number;
   memoryUsedBytes: number | null; memoryTotalBytes: number | null;
   swapUsedBytes: number | null; swapTotalBytes: number | null; osUptimeSeconds: number | null;
+  load1?: number | null; load5?: number | null; load15?: number | null; processCount?: number | null;
+  filesystems?: Array<{ source: string; mount: string; totalBytes: number; usedBytes: number }>;
+  osName?: string | null; agentVersion?: string;
 };
 const rangeMilliseconds: Record<MetricRange, number> = {
   '15m': 15 * 60_000, '1h': 60 * 60_000, '6h': 6 * 60 * 60_000,
@@ -70,7 +73,7 @@ export class MetricsService {
     }
     merged.fieldSampledAt = fieldSampledAt;
     merged.sourcePeriod = 'combined';
-    merged.rawSummary = { note: 'Latest actual value per field; fieldSampledAt records each source sample time.' };
+    merged.rawSummary = { agent: rows.find((row) => row.source_period === 'agent')?.raw_summary ?? null, note: 'Latest actual value per field; fieldSampledAt records each source sample time.' };
     return merged;
   }
 
@@ -152,7 +155,7 @@ export class MetricsService {
         memory_used_bytes: input.memoryUsedBytes, memory_total_bytes: input.memoryTotalBytes,
         swap_used_bytes: input.swapUsedBytes, swap_total_bytes: input.swapTotalBytes,
         os_uptime_seconds: input.osUptimeSeconds,
-        raw_summary: { source: 'guest_agent', filesystemCount: input.filesystemCount }, created_at: now,
+        raw_summary: { source: 'guest_agent', filesystemCount: input.filesystemCount, load1: input.load1 ?? null, load5: input.load5 ?? null, load15: input.load15 ?? null, processCount: input.processCount ?? null, filesystems: input.filesystems ?? [], osName: input.osName ?? null, agentVersion: input.agentVersion ?? 'unknown' }, created_at: now,
       };
       data.server_metrics.push(inserted);
       const agent = data.server_agents.find((row) => row.server_uuid === serverUuid);

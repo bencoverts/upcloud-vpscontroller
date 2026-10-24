@@ -1,4 +1,4 @@
-# Guest agent Linux untuk RAM, swap, filesystem, dan OS uptime
+# Guest agent Linux untuk metrik OS dan filesystem
 
 UpCloud server-statistics API yang digunakan panel tidak menyediakan penggunaan RAM/swap filesystem guest maupun OS uptime. `scripts/guest-agent.mjs` adalah collector opsional yang berjalan **di dalam VPS Linux** dan mengirim pengukuran aktual ke panel.
 
@@ -10,6 +10,10 @@ Tanpa agent, kartu dan grafik tersebut tetap menampilkan status tidak tersedia. 
 - **Swap:** `/proc/meminfo`; used = `SwapTotal - SwapFree`.
 - **Filesystem:** output byte `df -B1 -P`, hanya filesystem lokal dengan source `/dev/...`. Pseudo/network filesystem dikeluarkan dan bind mount dari source yang sama tidak dihitung dua kali.
 - **OS uptime:** angka pertama `/proc/uptime`.
+- **Load average:** tiga angka pertama `/proc/loadavg`; ini beban scheduler Linux, bukan persentase CPU.
+- **Process count:** jumlah total scheduling entities dari field keempat `/proc/loadavg`, bukan jumlah container/aplikasi.
+- **OS name:** nilai `PRETTY_NAME` dari `/etc/os-release`.
+- **Per-mount filesystem:** source, mount point, total, dan used bytes dari `df` yang sama dengan agregat; maksimal 64 mount lokal.
 
 Total filesystem dapat berbeda dari kapasitas storage UpCloud karena partisi, RAID/LVM, reserved blocks, dan beberapa device. Nilai ini adalah penggunaan filesystem yang dilaporkan guest, bukan kapasitas block storage.
 

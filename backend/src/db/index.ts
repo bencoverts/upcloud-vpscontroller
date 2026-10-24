@@ -57,6 +57,7 @@ export class JsonDatabase implements Database {
           serverPollSeconds: config.serverPollSeconds,
           metricsRefreshSeconds: config.metricsRefreshSeconds,
           metricsRetentionDays: config.metricsRetentionDays,
+          siteName: config.siteName, siteTagline: config.siteTagline,
         });
         await persistAtomic(filePath, state);
       }

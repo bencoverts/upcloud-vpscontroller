@@ -14,9 +14,9 @@ npm --prefix worker run typecheck
 npm --prefix worker run check
 ```
 
-Backend integration tests menggunakan file JSON disposable yang menjalankan persistence/rollback, integrity checks, encryption, Argon2id/session flow, HTTP routes, client assignment/expiry, guest-agent ingestion, scoped WebSocket delivery, sync workers, rename, backup, dan control verification. Hanya external UpCloud gateway/fetch boundary yang di-fake. Frontend tests menggunakan jsdom dan mocked panel API. `npm run test:scripts` menjalankan Node.js built-in test runner untuk backup/restore JSON dengan file fixture lokal; test tersebut juga termasuk dalam `npm test`.
+Backend integration tests menggunakan file JSON disposable yang menjalankan persistence/rollback, integrity checks, encryption, Argon2id/session flow, HTTP routes, client assignment/expiry, guest-agent ingestion, scoped WebSocket delivery, sync/lifecycle/deployment workers, scoped API keys, Proxmox task verification, branding/docs, mocked SMTP, mocked Google OIDC, backup, dan control verification. Hanya external UpCloud gateway/fetch boundary yang di-fake. Frontend tests menggunakan jsdom dan mocked panel API. `npm run test:scripts` menjalankan Node.js built-in test runner untuk backup/restore JSON dengan file fixture lokal; test tersebut juga termasuk dalam `npm test`.
 
-Test ini tidak membuktikan perilaku filesystem production, Docker restart, PM2 startup, nginx WebSocket upgrade, deployment Cloudflare remote, atau respons live UpCloud. Pisahkan klaim hasil test lokal dari validasi lingkungan tersebut. Pisahkan klaim hasil test lokal dari validasi lingkungan tersebut.
+Test ini tidak membuktikan perilaku filesystem production, Docker restart, PM2 startup, nginx WebSocket upgrade, deployment Cloudflare remote, atau respons live UpCloud. Pisahkan klaim hasil test lokal dari validasi lingkungan tersebut.
 
 ## Test coverage
 
@@ -52,7 +52,7 @@ curl --fail http://127.0.0.1:8787/health/ready
 curl --fail http://127.0.0.1:8787/
 ```
 
-Uji bootstrap/login dengan credential test, client admin-only denial, backup tanpa sessions, dan WebSocket `ready`. `wrangler deploy --dry-run` membuktikan bundling/konfigurasi, bukan keberhasilan runtime; smoke test lokal tetap diperlukan karena API runtime dapat berbeda dari Node.js. Dry-run dan simulasi R2 lokal juga bukan bukti deployment Cloudflare remote.
+Uji bootstrap/login dengan credential test, client admin-only denial, email uniqueness/current-account update, scoped-key authorization, branding upload, backup tanpa sessions/OAuth states, failure path SMTP tanpa koneksi eksternal, dan WebSocket `ready`. `wrangler deploy --dry-run` membuktikan bundling/konfigurasi, bukan keberhasilan runtime; smoke test lokal tetap diperlukan karena API runtime dapat berbeda dari Node.js. Dry-run dan simulasi R2 lokal juga bukan bukti deployment Cloudflare remote.
 
 ## Live UpCloud — read-only secara default
 

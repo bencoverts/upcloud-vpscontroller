@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { AppConfig } from '../config.js';
 import type { Database } from '../db/index.js';
 import type { AuthService } from './service.js';
+import type { GoogleAuthService } from './google.js';
 import { requireAuth, requireCsrf, sessionCookieName } from './middleware.js';
 import { requestAudit } from '../http/helpers.js';
 
@@ -16,7 +17,7 @@ const passwordSchema = z.object({
     .regex(/[0-9]/, 'Password harus mengandung angka.'),
 });
 
-export function authRoutes(db: Database, auth: AuthService, config: AppConfig): Router {
+export function authRoutes(db: Database, auth: AuthService, config: AppConfig, google?: GoogleAuthService): Router {
   const router = Router();
   const loginLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false,
@@ -25,6 +26,31 @@ export function authRoutes(db: Database, auth: AuthService, config: AppConfig): 
   const cookieOptions = (expires?: Date) => ({
     httpOnly: true, secure: config.cookieSecure, sameSite: 'lax' as const,
     path: '/', ...(expires ? { expires } : {}),
+  });
+
+  const oauthCookie = 'cerdasnet_google_oauth';
+  router.get('/google/status', (_req, res) => res.json({ data: google?.status() ?? { enabled: false } }));
+  router.get('/google', loginLimiter, async (_req, res, next) => {
+    try {
+      const result = await google!.begin();
+      res.cookie(oauthCookie, result.stateId, { ...cookieOptions(new Date(Date.now() + 600_000)), sameSite: 'lax' });
+      res.redirect(result.url);
+    } catch (error) { next(error); }
+  });
+  router.get('/google/callback', loginLimiter, async (req, res) => {
+    res.clearCookie(oauthCookie, cookieOptions());
+    try {
+      const input = z.object({ state: z.string().min(10).max(200), code: z.string().min(1).max(4096) }).parse(req.query);
+      const result = await google!.callback({
+        stateId: String(req.cookies?.[oauthCookie] ?? ''), state: input.state, code: input.code,
+        ipAddress: req.ip, userAgent: req.get('user-agent'),
+      });
+      res.cookie(sessionCookieName(config), result.sessionToken, cookieOptions(result.expiresAt));
+      await requestAudit(db, req, { action: 'auth.google_login', resourceType: 'user', resourceId: result.auth.user.id, outcome: 'success', userId: result.auth.user.id });
+      res.redirect('/');
+    } catch {
+      res.redirect('/login?oauth=failed');
+    }
   });
 
   router.post('/login', loginLimiter, async (req, res, next) => {
@@ -50,6 +76,19 @@ export function authRoutes(db: Database, auth: AuthService, config: AppConfig): 
 
   router.get('/me', requireAuth(auth, config), (req, res) => {
     res.json({ data: { user: req.auth!.user, csrfToken: req.auth!.csrfToken, expiresAt: req.auth!.expiresAt } });
+  });
+
+  router.get('/email', requireAuth(auth, config), async (req, res) => {
+    const email = await db.read((data) => data.users.find((row) => row.id === req.auth!.user.id)?.email ?? null);
+    res.json({ data: { email } });
+  });
+  router.patch('/email', requireAuth(auth, config), requireCsrf, async (req, res, next) => {
+    try {
+      const input = z.object({ email: z.string().trim().email().max(320).nullable() }).parse(req.body);
+      const result = await auth.setEmail(req.auth!.user.id, input.email);
+      await requestAudit(db, req, { action: 'auth.email_update', resourceType: 'user', resourceId: req.auth!.user.id, outcome: 'success' });
+      res.json({ data: result });
+    } catch (error) { next(error); }
   });
 
   router.post('/logout', requireAuth(auth, config), requireCsrf, async (req, res, next) => {

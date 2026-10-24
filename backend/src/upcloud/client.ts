@@ -1,6 +1,6 @@
 import { AppError, sanitizeUpstreamMessage } from '../lib/errors.js';
 import { normalizeServerDetails, normalizeServerList, normalizeStats } from './normalize.js';
-import type { UpCloudGateway, UpCloudStatsSummary } from './types.js';
+import type { UpCloudConfigurationUpdate, UpCloudDeploymentInput, UpCloudGateway, UpCloudRebuildInput, UpCloudStatsSummary } from './types.js';
 
 const API_BASE_URL = 'https://api.upcloud.com/1.3';
 const MAX_RESPONSE_BYTES = 12 * 1024 * 1024;
@@ -64,6 +64,87 @@ export class UpCloudClient implements UpCloudGateway {
     }));
   }
 
+  async listTemplates() {
+    const results = [];
+    const limit = 100;
+    for (let page = 0; page < 20; page += 1) {
+      const payload = await this.request(`/storage/template?limit=${limit}&offset=${page * limit}`);
+      const storages = (payload as any)?.storages?.storage;
+      const rows = Array.isArray(storages) ? storages : [];
+      results.push(...rows.map((row: any) => ({
+        uuid: String(row.uuid), title: String(row.title ?? row.uuid), sizeGib: Number(row.size) || 0,
+        zone: row.zone ? String(row.zone) : null, access: row.access ? String(row.access) : 'public',
+      })).filter((row: any) => /^[0-9a-f-]{36}$/i.test(row.uuid)));
+      if (rows.length < limit) return results;
+    }
+    throw new UpCloudApiError(502, 'UPCLOUD_ERROR', 'Pagination template UpCloud melebihi batas pengaman.');
+  }
+
+  async listPlans() {
+    const payload = await this.request('/plan');
+    const plans = (payload as any)?.plans?.plan;
+    return (Array.isArray(plans) ? plans : []).map((row: any) => ({
+      name: String(row.name), coreNumber: Number(row.core_number) || 0,
+      memoryMib: Number(row.memory_amount) || 0, storageGib: Number(row.storage_size) || 0,
+      storageTier: row.storage_tier ? String(row.storage_tier) : null,
+      publicTrafficOutGib: row.public_traffic_out === undefined ? null : Number(row.public_traffic_out) || 0,
+    })).filter((row: any) => row.name && row.coreNumber > 0 && row.memoryMib > 0);
+  }
+
+  async listZones() {
+    const payload = await this.request('/zone');
+    const zones = (payload as any)?.zones?.zone;
+    return (Array.isArray(zones) ? zones : []).map((row: any) => ({
+      id: String(row.id), description: String(row.description ?? row.id), public: row.public === 'yes' || row.public === true,
+    })).filter((row: any) => row.id);
+  }
+
+  async createServer(input: UpCloudDeploymentInput) {
+    const loginUser = input.sshKeys.length ? {
+      create_password: 'no', username: 'root', ssh_keys: { ssh_key: input.sshKeys },
+    } : undefined;
+    return normalizeServerDetails(await this.request('/server', {
+      method: 'POST', retry: false,
+      body: { server: {
+        title: input.title, hostname: input.hostname, zone: input.zone, plan: input.plan,
+        metadata: 'yes', password_delivery: input.passwordDelivery,
+        ...(loginUser ? { login_user: loginUser } : {}),
+        ...(input.userData ? { user_data: input.userData } : {}),
+        storage_devices: { storage_device: [{
+          action: 'clone', storage: input.templateUuid, title: `${input.hostname}-disk0`,
+          size: input.storageGib, tier: input.storageTier,
+        }] },
+      } },
+    }));
+  }
+
+  async rebuildServer(uuid: string, input: UpCloudRebuildInput) {
+    return normalizeServerDetails(await this.request(`/server/${encodeURIComponent(uuid)}/rebuild`, {
+      method: 'POST', retry: false,
+      body: { server_rebuild: {
+        clone_source: input.templateUuid, detach_disk: input.detachDisk,
+        delete_detached_disk: input.deleteDetachedDisk ? 'yes' : 'no',
+        encrypted: input.encrypted ? 'yes' : 'no', password_delivery: input.passwordDelivery,
+        ...(input.storageTitle ? { storage_title: input.storageTitle } : {}),
+        ...(input.sshKeys.length ? { login_user: {
+          create_password: 'no', username: 'root', ssh_keys: { ssh_key: input.sshKeys },
+        } } : {}),
+      } },
+    }));
+  }
+
+  async updateConfiguration(uuid: string, input: UpCloudConfigurationUpdate) {
+    const server: Record<string, unknown> = { ...input };
+    if (input.bootOrder !== undefined) { server.boot_order = input.bootOrder; delete server.bootOrder; }
+    if (input.nicModel !== undefined) { server.nic_model = input.nicModel; delete server.nicModel; }
+    if (input.metadata !== undefined) server.metadata = input.metadata ? 'yes' : 'no';
+    return normalizeServerDetails(await this.request(`/server/${encodeURIComponent(uuid)}`, { method: 'PUT', body: { server }, retry: false }));
+  }
+
+  async deleteServer(uuid: string, deleteStorages: boolean) {
+    await this.request(`/server/${encodeURIComponent(uuid)}${deleteStorages ? '?storages=1' : ''}`, { method: 'DELETE', retry: false });
+  }
+
   async getCpuStats(uuid: string, period: UpCloudStatsSummary['period'] = 'daily') {
     return normalizeStats(await this.request(`/server/${encodeURIComponent(uuid)}/stats/cpu/${period}`), period);
   }
@@ -82,9 +163,9 @@ export class UpCloudClient implements UpCloudGateway {
     }));
   }
 
-  async stopServer(uuid: string) {
+  async stopServer(uuid: string, stopType: 'soft' | 'hard' = 'soft') {
     return normalizeServerDetails(await this.request(`/server/${encodeURIComponent(uuid)}/stop`, {
-      method: 'POST', body: { stop_server: { stop_type: 'soft', timeout: '60' } }, retry: false,
+      method: 'POST', body: { stop_server: { stop_type: stopType, ...(stopType === 'soft' ? { timeout: '60' } : {}) } }, retry: false,
     }));
   }
 

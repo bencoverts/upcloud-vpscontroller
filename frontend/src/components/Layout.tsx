@@ -3,7 +3,7 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useMutation } from '@tanstack/react-query';
 import {
   Activity, Cloud, KeyRound, LayoutDashboard, LogOut, Menu, Moon, RefreshCw,
-  Server, Settings, ShieldCheck, Sun, Users, X, Zap,
+  Server, Settings, ShieldCheck, Sun, Users, X, Zap, BookOpen, Boxes, KeySquare, PlusCircle,
 } from 'lucide-react';
 import { api } from '../api';
 import type { SyncJob } from '../types';
@@ -12,6 +12,7 @@ import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { useToast } from '../context/ToastContext';
 import { useJobs } from '../context/JobsContext';
+import { useBranding } from '../context/BrandingContext';
 import { useLiveStatus } from '../context/LiveContext';
 import { Button, Skeleton } from './ui';
 
@@ -19,15 +20,20 @@ const navigation = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/servers', label: 'VPS Servers', icon: Server },
   { to: '/tokens', label: 'API Token Manager', icon: KeyRound, admin: true },
+  { to: '/deploy', label: 'Deploy VPS', icon: PlusCircle },
+  { to: '/proxmox', label: 'Proxmox VE', icon: Boxes, admin: true },
+  { to: '/api-keys', label: 'Panel API Keys', icon: KeySquare },
+  { to: '/docs', label: 'Documentation', icon: BookOpen },
   { to: '/monitoring', label: 'Monitoring', icon: Activity },
   { to: '/activity', label: 'Activity Logs', icon: Zap, admin: true },
   { to: '/users', label: 'Client Users', icon: Users, admin: true },
   { to: '/settings', label: 'Settings', icon: Settings },
 ];
-const pageNames: Record<string, string> = { '/': 'Dashboard', '/servers': 'VPS Servers', '/tokens': 'API Token Manager', '/monitoring': 'Monitoring', '/activity': 'Activity Logs', '/settings': 'Settings', '/users': 'Client Users' };
+const pageNames: Record<string, string> = { '/': 'Dashboard', '/servers': 'VPS Servers', '/tokens': 'API Token Manager', '/monitoring': 'Monitoring', '/activity': 'Activity Logs', '/settings': 'Settings', '/users': 'Client Users', '/deploy': 'Deploy VPS', '/proxmox': 'Proxmox VE', '/api-keys': 'Panel API Keys', '/docs': 'Documentation' };
 
 export function Brand({ compact = false }: { compact?: boolean }) {
-  return <div className="flex items-center gap-3"><div className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-[13px] bg-gradient-to-br from-teal-400 to-emerald-600 text-white shadow-lg shadow-teal-600/20"><Cloud className="h-5 w-5" strokeWidth={2.2} /><span className="absolute -right-0.5 -bottom-0.5 h-3 w-3 rounded-full border-2 border-white bg-emerald-400 dark:border-slate-900" /></div>{!compact && <div><div className="text-[17px] font-extrabold tracking-[-0.035em] text-slate-950 dark:text-white">CerdasNet</div><div className="text-[9px] font-bold tracking-[0.2em] text-slate-400 uppercase dark:text-slate-500">VPS Control</div></div>}</div>;
+  const branding = useBranding();
+  return <div className="flex items-center gap-3"><div className="relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[13px] bg-gradient-to-br from-teal-400 to-teal-700 text-white shadow-lg shadow-teal-600/20">{branding.logoUrl ? <img src={branding.logoUrl} alt="" className="h-full w-full object-cover" /> : <Cloud className="h-5 w-5" strokeWidth={2.2} />}<span className="absolute -right-0.5 -bottom-0.5 h-3 w-3 rounded-full border-2 border-white bg-emerald-400 dark:border-slate-900" /></div>{!compact && <div><div className="max-w-44 truncate text-[17px] font-extrabold tracking-[-0.035em] text-slate-950 dark:text-white">{branding.siteName}</div><div className="max-w-44 truncate text-[9px] font-bold tracking-[0.2em] text-slate-400 uppercase dark:text-slate-500">{branding.siteTagline}</div></div>}</div>;
 }
 
 export default function Layout() {
@@ -78,7 +84,8 @@ export default function Layout() {
           <Button variant="ghost" size="icon" onClick={handleLogout} aria-label="Logout" title="Logout"><LogOut className="h-[18px] w-[18px]" /></Button>
         </div>
       </header>
-      <main id="main-content" className="mx-auto w-full max-w-[1680px] p-4 sm:p-6 lg:p-8"><Suspense fallback={<div className="space-y-4"><Skeleton className="h-24" /><Skeleton className="h-80" /></div>}><Outlet /></Suspense></main>
+      <main id="main-content" className="mx-auto w-full max-w-[1680px] p-4 pb-24 sm:p-6 sm:pb-24 lg:p-8"><Suspense fallback={<div className="space-y-4"><Skeleton className="h-24" /><Skeleton className="h-80" /></div>}><Outlet /></Suspense></main>
     </div>
+    <nav className="fixed inset-x-0 bottom-0 z-40 flex h-[72px] items-stretch justify-around border-t border-slate-200 bg-white/95 px-2 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl dark:border-slate-800 dark:bg-slate-950/95 lg:hidden" aria-label="Navigasi mobile">{navigation.filter((item) => ['/', '/servers', '/deploy', '/monitoring', '/settings'].includes(item.to)).map((item) => <NavLink key={item.to} to={item.to} end={item.end} className={({ isActive }) => cx('flex min-w-14 flex-1 flex-col items-center justify-center gap-1 text-[10px] font-semibold', isActive ? 'text-teal-600 dark:text-teal-400' : 'text-slate-400')}><item.icon className="h-5 w-5" /><span className="max-w-full truncate px-1">{item.to === '/' ? 'Home' : item.to === '/servers' ? 'VPS' : item.label}</span></NavLink>)}</nav>
   </div>;
 }

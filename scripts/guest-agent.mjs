@@ -43,26 +43,32 @@ async function filesystems() {
     if (columns.length < 6 || !columns[0].startsWith('/dev/')) continue;
     const [source, total, used] = columns;
     // Bind mounts of the same source must not be counted more than once.
-    if (!devices.has(source)) devices.set(source, { total: number(total), used: number(used) });
+    if (!devices.has(source)) devices.set(source, { total: number(total), used: number(used), mount: columns.slice(5).join(' ') });
   }
   if (devices.size === 0) throw new Error('No local block filesystem was found by df.');
-  const values = [...devices.values()];
+  const values = [...devices.entries()].map(([source, item]) => ({ source, ...item }));
   return {
     filesystemUsedBytes: values.reduce((sum, item) => sum + item.used, 0),
     filesystemTotalBytes: values.reduce((sum, item) => sum + item.total, 0),
     filesystemCount: values.length,
+    filesystems: values.slice(0, 64).map((item) => ({ source: item.source, mount: item.mount, totalBytes: item.total, usedBytes: item.used })),
   };
 }
 
 async function guestMetrics() {
-  const [disk, meminfoRaw, uptimeRaw] = await Promise.all([
-    filesystems(), readFile('/proc/meminfo', 'utf8'), readFile('/proc/uptime', 'utf8'),
+  const [disk, meminfoRaw, uptimeRaw, loadRaw, osRelease] = await Promise.all([
+    filesystems(), readFile('/proc/meminfo', 'utf8'), readFile('/proc/uptime', 'utf8'), readFile('/proc/loadavg', 'utf8'),
+    readFile('/etc/os-release', 'utf8').catch(() => ''),
   ]);
   const meminfo = new Map(meminfoRaw.split('\n').flatMap((line) => {
     const match = line.match(/^([^:]+):\s+(\d+)\s+kB/);
     return match ? [[match[1], Number(match[2]) * 1024]] : [];
   }));
   const osUptimeSeconds = Number(uptimeRaw.trim().split(/\s+/)[0]);
+  const load = loadRaw.trim().split(/\s+/).slice(0, 3).map(Number);
+  if (load.length !== 3 || load.some((value) => !Number.isFinite(value) || value < 0)) throw new Error('Agent collected invalid load averages.');
+  const processCount = Number(loadRaw.trim().split(/\s+/)[3]?.split('/')[1]);
+  const osName = osRelease.match(/^PRETTY_NAME="?([^"\n]+)"?$/m)?.[1] ?? null;
   if (!Number.isFinite(osUptimeSeconds) || osUptimeSeconds < 0) throw new Error('Agent collected an invalid OS uptime.');
   const memoryTotal = meminfo.get('MemTotal');
   const memoryAvailable = meminfo.get('MemAvailable');
@@ -76,6 +82,9 @@ async function guestMetrics() {
     swapUsedBytes: swapTotal !== null && swapFree !== null ? Math.max(0, swapTotal - swapFree) : null,
     swapTotalBytes: swapTotal,
     osUptimeSeconds,
+    load1: load[0], load5: load[1], load15: load[2],
+    processCount: Number.isSafeInteger(processCount) && processCount > 0 ? processCount : null,
+    osName, agentVersion: '1.1.0',
   };
 }
 
@@ -90,7 +99,7 @@ async function submit() {
         headers: {
           Authorization: `Bearer ${agentToken}`,
           'Content-Type': 'application/json', Accept: 'application/json',
-          'User-Agent': 'CerdasNet-Guest-Agent/1.0',
+          'User-Agent': 'CerdasNet-Guest-Agent/1.1',
         },
         body: JSON.stringify(metrics), signal: controller.signal, redirect: 'error',
       });

@@ -1,5 +1,5 @@
 export type PanelEvent = {
-  type: 'ready' | 'job' | 'server' | 'token' | 'metric' | 'client' | 'access';
+  type: 'ready' | 'job' | 'server' | 'token' | 'metric' | 'client' | 'access' | 'proxmox' | 'branding';
   payload: Record<string, unknown>;
 };
 

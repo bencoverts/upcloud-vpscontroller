@@ -21,6 +21,8 @@
   ],
   "vars": {
     "APP_ORIGIN": "https://cerdasnet-vps-control.example.workers.dev",
+    "SITE_NAME": "CerdasNet VPS Control",
+    "SITE_TAGLINE": "Cloud infrastructure, clearly controlled.",
     "COOKIE_SECURE": "true",
     "SESSION_TTL_HOURS": "12",
     "SYNC_INTERVAL_SECONDS": "300",

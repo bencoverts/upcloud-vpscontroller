@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Production-ready multi-token UpCloud VPS control panel",
   "scripts": {
-    "setup": "npm ci --include=dev && npm --prefix backend ci --include=dev && npm --prefix frontend ci --include=dev",
+    "setup": "node scripts/setup.mjs",
     "start": "node server.js",
     "dev": "concurrently -n backend,frontend -c blue,green \"npm --prefix backend run dev\" \"npm --prefix frontend run dev\"",
     "build": "npm --prefix backend run build && npm --prefix frontend run build",
@@ -17,7 +17,8 @@
     "test:e2e": "npm --prefix frontend run test:e2e",
     "bootstrap:admin": "node scripts/bootstrap-admin.mjs",
     "backup": "node scripts/backup.mjs",
-    "restore": "node scripts/restore.mjs"
+    "restore": "node scripts/restore.mjs",
+    "setup:install": "npm ci --include=dev && npm --prefix backend ci --include=dev && npm --prefix frontend ci --include=dev"
   },
   "devDependencies": {
     "@eslint/js": "^9.38.0",

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Ban, CheckCircle2, Clock3, KeyRound, Plus, Server, ShieldCheck, UserCog, Users } from 'lucide-react';
+import { Ban, CheckCircle2, Clock3, KeyRound, Mail, Plus, Server, ShieldCheck, UserCog, Users } from 'lucide-react';
 import { api } from '../api';
 import type { ClientUser, Server as ServerType } from '../types';
 import { formatDate, relativeTime } from '../utils';
@@ -16,6 +16,7 @@ export default function UsersPage() {
   const { push } = useToast();
   const [creating, setCreating] = useState(false);
   const [accessClient, setAccessClient] = useState<ClientUser | null>(null);
+  const [emailClient, setEmailClient] = useState<ClientUser | null>(null);
   const [passwordClient, setPasswordClient] = useState<ClientUser | null>(null);
   const [disableClient, setDisableClient] = useState<ClientUser | null>(null);
   const clients = useQuery({ queryKey: ['users'], queryFn: () => api.get<ClientUser[]>('/api/users') });
@@ -33,30 +34,41 @@ export default function UsersPage() {
       : clients.error ? <Card><ErrorState error={clients.error} retry={() => void clients.refetch()} /></Card>
         : clients.data?.length === 0 ? <Card><EmptyState icon={Users} title="Belum ada client" description="Buat akun client dengan password unik, lalu pilih VPS yang boleh dikontrol." action={<Button onClick={() => setCreating(true)}><Plus className="h-4 w-4" />Tambah client</Button>} /></Card>
           : <div className="grid items-start gap-4 lg:grid-cols-2 2xl:grid-cols-3">{clients.data?.map((client) => <Card key={client.id} className="overflow-hidden">
-            <div className="flex flex-col gap-3 border-b border-slate-100 p-5 dark:border-slate-800 sm:flex-row sm:items-center sm:justify-between"><div className="flex min-w-0 items-center gap-3"><div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-teal-50 text-teal-600 dark:bg-teal-500/10 dark:text-teal-400"><UserCog className="h-5 w-5" /></div><div className="min-w-0"><h2 className="truncate text-sm font-bold">{client.username}</h2><p className="mt-1 text-[11px] text-slate-400">Dibuat {formatDate(client.createdAt)}</p></div></div><Badge tone={client.disabled ? 'red' : 'green'}>{client.disabled ? 'Nonaktif' : 'Aktif'}</Badge></div>
+            <div className="flex flex-col gap-3 border-b border-slate-100 p-5 dark:border-slate-800 sm:flex-row sm:items-center sm:justify-between"><div className="flex min-w-0 items-center gap-3"><div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-teal-50 text-teal-600 dark:bg-teal-500/10 dark:text-teal-400"><UserCog className="h-5 w-5" /></div><div className="min-w-0"><h2 className="truncate text-sm font-bold">{client.username}</h2><p className="mt-1 truncate text-[11px] text-slate-400">{client.email ?? 'Email belum diatur'} · Dibuat {formatDate(client.createdAt)}</p></div></div><Badge tone={client.disabled ? 'red' : 'green'}>{client.disabled ? 'Nonaktif' : 'Aktif'}</Badge></div>
             <div className="p-5"><div className="mb-3 flex items-center justify-between text-xs"><span className="font-semibold">Akses VPS</span><span className="text-slate-400">{client.access.length} assignment</span></div>
               {client.access.length === 0 ? <p className="rounded-xl bg-slate-50 p-3 text-xs text-slate-400 dark:bg-slate-950/50">Belum ada VPS yang dapat diakses.</p> : <div className="space-y-2">{client.access.map((access) => <div key={access.serverUuid} className="rounded-xl border border-slate-100 p-3 dark:border-slate-800"><div className="flex items-start justify-between gap-2"><span className="min-w-0 truncate text-xs font-semibold">{access.title}</span><Badge tone={access.expired ? 'red' : access.expiresAt ? 'amber' : 'green'}>{access.expired ? 'Expired' : access.expiresAt ? 'Berbatas' : 'Tanpa expiry'}</Badge></div><p className="mt-1.5 flex items-center gap-1 text-[11px] text-slate-400"><Clock3 className="h-3 w-3" />{access.expiresAt ? `${formatDate(access.expiresAt)} · ${relativeTime(access.expiresAt)}` : 'Akses tidak terbatas'}</p></div>)}</div>}
-            </div><div className="flex flex-wrap gap-2 border-t border-slate-100 p-4 dark:border-slate-800"><Button size="sm" variant="outline" onClick={() => setAccessClient(client)}><Server className="h-3.5 w-3.5" />Atur VPS</Button><Button size="sm" variant="outline" onClick={() => setPasswordClient(client)}><KeyRound className="h-3.5 w-3.5" />Reset password</Button><Button size="sm" variant={client.disabled ? 'primary' : 'danger'} loading={toggle.isPending && toggle.variables?.id === client.id} onClick={() => client.disabled ? toggle.mutate(client) : setDisableClient(client)}>{client.disabled ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Ban className="h-3.5 w-3.5" />}{client.disabled ? 'Aktifkan' : 'Nonaktifkan'}</Button></div>
+            </div><div className="flex flex-wrap gap-2 border-t border-slate-100 p-4 dark:border-slate-800"><Button size="sm" variant="outline" onClick={() => setAccessClient(client)}><Server className="h-3.5 w-3.5" />Atur VPS</Button><Button size="sm" variant="outline" onClick={() => setEmailClient(client)}><Mail className="h-3.5 w-3.5" />Email / Google</Button><Button size="sm" variant="outline" onClick={() => setPasswordClient(client)}><KeyRound className="h-3.5 w-3.5" />Reset password</Button><Button size="sm" variant={client.disabled ? 'primary' : 'danger'} loading={toggle.isPending && toggle.variables?.id === client.id} onClick={() => client.disabled ? toggle.mutate(client) : setDisableClient(client)}>{client.disabled ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Ban className="h-3.5 w-3.5" />}{client.disabled ? 'Aktifkan' : 'Nonaktifkan'}</Button></div>
           </Card>)}</div>}
     {creating && <ClientForm onClose={() => setCreating(false)} onSaved={invalidate} />}
     {accessClient && <AccessEditor client={accessClient} servers={options.data ?? []} loading={options.isLoading} onClose={() => setAccessClient(null)} onSaved={async () => { await invalidate(); setAccessClient(null); }} />}
+    {emailClient && <EmailEditor client={emailClient} onClose={() => setEmailClient(null)} onSaved={invalidate} />}
     {passwordClient && <PasswordReset client={passwordClient} onClose={() => setPasswordClient(null)} onSaved={invalidate} />}
     {disableClient && <Modal title={`Nonaktifkan ${disableClient.username}?`} description="Semua sesi client akan dicabut dan login berikutnya ditolak." onClose={() => !toggle.isPending && setDisableClient(null)} footer={<><Button variant="outline" disabled={toggle.isPending} onClick={() => setDisableClient(null)}>Batal</Button><Button variant="danger" loading={toggle.isPending} onClick={() => toggle.mutate(disableClient)}>Ya, nonaktifkan client</Button></>}><p className="text-sm leading-6 text-slate-500">Assignment dan histori tetap tersimpan. Tindakan ini tidak mematikan, menghentikan, atau mengubah VPS.</p></Modal>}
   </>;
 }
 
 function ClientForm({ onClose, onSaved }: { onClose: () => void; onSaved: () => Promise<void> }) {
-  const [username, setUsername] = useState(''); const [password, setPassword] = useState(''); const [error, setError] = useState('');
+  const [username, setUsername] = useState(''); const [email, setEmail] = useState(''); const [password, setPassword] = useState(''); const [error, setError] = useState('');
   const { push } = useToast();
   const save = useMutation({
-    mutationFn: () => api.post<ClientUser>('/api/users', { username, password }),
+    mutationFn: () => api.post<ClientUser>('/api/users', { username, password, email: email.trim() || null }),
     onSuccess: async (client) => { await onSaved(); push('success', 'Client dibuat', `${client.username} dapat login melalui halaman yang sama.`); onClose(); },
     onError: (reason) => setError(reason.message),
   });
   const submit = (event: FormEvent) => { event.preventDefault(); setError(''); if (!validPassword(password)) return setError('Password minimal 12 karakter dan memuat huruf besar, huruf kecil, serta angka.'); save.mutate(); };
   return <Modal title="Tambah client" description="Tidak ada role yang dipilih saat login; role ditentukan dari akun." onClose={onClose} footer={<><Button variant="outline" onClick={onClose}>Batal</Button><Button loading={save.isPending} onClick={() => save.mutate()} disabled={!username.trim() || !validPassword(password)}>Buat client</Button></>}>
-    <form id="create-client" onSubmit={submit} className="space-y-4"><Field label="Username" required><input className={inputClass} value={username} onChange={(event) => setUsername(event.target.value)} minLength={3} maxLength={64} pattern="[a-zA-Z0-9._-]+" autoComplete="off" required /></Field><Field label="Password awal" hint="Minimal 12 karakter, huruf besar, huruf kecil, dan angka. Bagikan melalui kanal aman." required><input type="password" className={inputClass} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" required /></Field>{error && <p role="alert" className="text-xs text-rose-500">{error}</p>}<button type="submit" className="hidden" /></form>
+    <form id="create-client" onSubmit={submit} className="space-y-4"><Field label="Username" required><input className={inputClass} value={username} onChange={(event) => setUsername(event.target.value)} minLength={3} maxLength={64} pattern="[a-zA-Z0-9._-]+" autoComplete="off" required /></Field><Field label="Email untuk Google Auth (opsional)"><input type="email" className={inputClass} value={email} onChange={(event) => setEmail(event.target.value)} maxLength={320} autoComplete="off" placeholder="client@example.com" /></Field><Field label="Password awal" hint="Minimal 12 karakter, huruf besar, huruf kecil, dan angka. Bagikan melalui kanal aman." required><input type="password" className={inputClass} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" required /></Field>{error && <p role="alert" className="text-xs text-rose-500">{error}</p>}<button type="submit" className="hidden" /></form>
   </Modal>;
+}
+
+function EmailEditor({ client, onClose, onSaved }: { client: ClientUser; onClose: () => void; onSaved: () => Promise<void> }) {
+  const [email, setEmail] = useState(client.email ?? ''); const { push } = useToast();
+  const save = useMutation({
+    mutationFn: () => api.patch(`/api/users/${client.id}`, { email: email.trim() || null }),
+    onSuccess: async () => { await onSaved(); push('success', 'Email client disimpan', 'Google harus memverifikasi email ini sebelum dapat digunakan login.'); onClose(); },
+    onError: (error) => push('error', 'Email tidak dapat disimpan', error.message),
+  });
+  return <Modal title={`Email & Google Auth · ${client.username}`} description="Email harus unik. Google login hanya berhasil setelah provider menyatakan email_verified=true." onClose={onClose} footer={<><Button variant="outline" onClick={onClose}>Batal</Button><Button loading={save.isPending} onClick={() => save.mutate()}>Simpan email</Button></>}><Field label="Email client" hint="Kosongkan untuk menonaktifkan pencocokan akun Google berdasarkan email. Identity yang sudah terhubung tetap mengikuti subject Google."><input type="email" autoFocus className={inputClass} value={email} onChange={(event) => setEmail(event.target.value)} maxLength={320} placeholder="client@example.com" /></Field></Modal>;
 }
 
 function PasswordReset({ client, onClose, onSaved }: { client: ClientUser; onClose: () => void; onSaved: () => Promise<void> }) {

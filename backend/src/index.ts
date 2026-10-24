@@ -7,7 +7,7 @@ import { attachRealtimeServer } from './realtime.js';
 const config = loadConfig();
 const db = await createDatabase(config);
 const { app, services } = createApplication({ config, db });
-const scheduler = new SyncScheduler(db, services.sync, services.settings, services.logger);
+const scheduler = new SyncScheduler(db, services.sync, services.settings, services.logger, services.proxmox);
 await scheduler.start(config.autoSyncOnBoot);
 const server = app.listen(config.port, '0.0.0.0', () => {
   services.logger.info({ port: config.port, database: db.filePath }, 'CerdasNet VPS Control listening with local JSON storage');

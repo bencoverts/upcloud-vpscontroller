@@ -11,18 +11,21 @@ import { createWorkerApi } from './api.js';
 import { workerConfig } from './runtime.js';
 import type { WorkerEnv } from './runtime.js';
 
-type SocketRecord = { context: AuthContext; expiry: ReturnType<typeof setTimeout> };
+type SocketRecord = { socket: WebSocket; context: AuthContext };
 type RateBucket = { startedAt: number; count: number };
 
 function sessionIsActive(data: DatabaseData, context: AuthContext): boolean {
-  const session = data.sessions.find((row) => row.id === context.sessionId && new Date(row.expires_at).getTime() > Date.now());
-  return Boolean(session && data.users.some((row) => row.id === context.user.id && !row.disabled));
+  const now = Date.now();
+  if (new Date(context.expiresAt).getTime() <= now || !data.users.some((row) => row.id === context.user.id && !row.disabled)) return false;
+  if (context.apiKey) {
+    return data.panel_api_keys.some((row) => row.id === context.apiKey!.id && !row.revoked && new Date(row.expires_at ?? '2999-01-01').getTime() > now);
+  }
+  return data.sessions.some((row) => row.id === context.sessionId && new Date(row.expires_at).getTime() > now);
 }
 
 export class PanelDurableObject extends DurableObject<WorkerEnv> {
   private services?: ApplicationServices;
   private api?: ReturnType<typeof createWorkerApi>;
-  private readonly sockets = new Map<WebSocket, SocketRecord>();
   private readonly rateBuckets = new Map<string, RateBucket>();
   private loginTail: Promise<void> = Promise.resolve();
   private readonly ready: Promise<void>;
@@ -49,14 +52,7 @@ export class PanelDurableObject extends DurableObject<WorkerEnv> {
       websocket: (c) => this.connectWebSocket(c),
     });
     if (!await this.ctx.storage.getAlarm()) await this.ctx.storage.setAlarm(Date.now() + 30_000);
-    setInterval(() => {
-      for (const [socket, record] of this.sockets) {
-        void this.services!.db.read((data) => sessionIsActive(data, record.context)).then((active) => {
-          if (!active) return socket.close(4001, 'Session expired or revoked');
-          if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'heartbeat', payload: { at: new Date().toISOString() } }));
-        }).catch(() => undefined);
-      }
-    }, 25_000);
+    setInterval(() => this.checkSockets(), 25_000);
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -74,7 +70,8 @@ export class PanelDurableObject extends DurableObject<WorkerEnv> {
     const settings = await services.settings.get();
     if (Date.now() - this.lastScheduled >= settings.syncIntervalSeconds * 1000) {
       this.lastScheduled = Date.now();
-      await services.sync.enqueueSyncAll(null, 'automatic');
+      const results = await Promise.allSettled([services.sync.enqueueSyncAll(null, 'automatic'), services.proxmox.syncAll()]);
+      for (const result of results) if (result.status === 'rejected') console.error('Scheduled provider synchronization failed', result.reason instanceof Error ? result.reason.message : 'Unknown error');
     }
     if (Date.now() - this.lastCleanup >= 60 * 60 * 1000) {
       this.lastCleanup = Date.now();
@@ -85,6 +82,7 @@ export class PanelDurableObject extends DurableObject<WorkerEnv> {
         data.server_metrics = data.server_metrics.filter((row) => new Date(row.sampled_at).getTime() >= cutoff);
       });
     }
+    this.checkSockets();
     await this.ctx.storage.setAlarm(Date.now() + 30_000);
   }
 
@@ -127,26 +125,42 @@ export class PanelDurableObject extends DurableObject<WorkerEnv> {
     const client = pair[0];
     const server = pair[1];
     const context = c.get('auth') as AuthContext;
-    server.accept();
-    const expiry = setTimeout(() => server.close(4001, 'Session expired'), Math.max(1, context.expiresAt.getTime() - Date.now()));
-    this.sockets.set(server, { context, expiry });
-    const cleanup = () => {
-      clearTimeout(expiry);
-      this.sockets.delete(server);
-    };
-    server.addEventListener('close', cleanup);
-    server.addEventListener('error', cleanup);
-    server.addEventListener('message', () => server.close(1003, 'Client messages are not supported'));
+    this.ctx.acceptWebSocket(server);
+    server.serializeAttachment(context);
     server.send(JSON.stringify({ type: 'ready', payload: { connectedAt: new Date().toISOString(), transport: 'websocket' } }));
     return new Response(null, { status: 101, webSocket: client });
   }
 
+  async webSocketMessage(socket: WebSocket): Promise<void> {
+    socket.close(1003, 'Client messages are not supported');
+  }
+
+  async webSocketClose(socket: WebSocket, code: number, reason: string): Promise<void> {
+    // Safe on newer runtimes that auto-reply and required by older workerd versions.
+    socket.close(code, reason);
+  }
+
+  private socketRecords(): SocketRecord[] {
+    return this.ctx.getWebSockets().flatMap((socket) => {
+      const stored = socket.deserializeAttachment() as AuthContext | null;
+      return stored ? [{ socket, context: { ...stored, expiresAt: new Date(stored.expiresAt) } }] : [];
+    });
+  }
+
+  private checkSockets(): void {
+    for (const { socket, context } of this.socketRecords()) {
+      void this.services!.db.read((data) => sessionIsActive(data, context)).then((active) => {
+        if (!active) return socket.close(4001, 'Session expired or revoked');
+        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'heartbeat', payload: { at: new Date().toISOString() } }));
+      }).catch(() => undefined);
+    }
+  }
+
   private broadcast(event: PanelEvent): void {
-    for (const [socket, record] of this.sockets) {
+    for (const { socket, context } of this.socketRecords()) {
       const send = () => {
         if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: event.type, payload: event.payload }));
       };
-      const { context } = record;
       void this.services!.db.read((data) => {
         if (!sessionIsActive(data, context)) return 'close' as const;
         if (context.user.role === 'admin') return 'send' as const;

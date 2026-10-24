@@ -16,7 +16,7 @@ export function mergeSample(current: MetricSample | null, incoming: MetricSample
     if (value !== null && value !== undefined && !['rawSummary', 'fieldSampledAt', 'sourcePeriod'].includes(key)) Object.assign(merged, { [key]: value });
   }
   merged.fieldSampledAt = { ...current.fieldSampledAt, ...incoming.fieldSampledAt };
-  merged.rawSummary = { note: 'Combined latest actual values from UpCloud and guest agent.' };
+  merged.rawSummary = { ...current.rawSummary, ...incoming.rawSummary, note: 'Combined latest actual values from UpCloud and guest agent.' };
   return merged;
 }
 
@@ -68,6 +68,7 @@ export function LiveProvider({ children }: { children: ReactNode }) {
         if (event.type === 'job') {
           window.dispatchEvent(new CustomEvent<SyncJob>('cerdasnet:job', { detail: event.payload as SyncJob }));
         }
+        if (event.type === 'proxmox') { void queryClient.invalidateQueries({ queryKey: ['proxmox-resources'] }); void queryClient.invalidateQueries({ queryKey: ['proxmox-connections'] }); }
         if (event.type === 'token') void queryClient.invalidateQueries({ queryKey: ['tokens'] });
         if (event.type === 'client' || event.type === 'access') void queryClient.invalidateQueries({ queryKey: ['users'] });
         invalidateFleet();

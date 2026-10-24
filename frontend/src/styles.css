@@ -7,6 +7,11 @@
   text-rendering: optimizeLegibility;
   color: #172033;
   background: #f5f7fb;
+  --brand-accent: #14b8a6;
+  --color-teal-400: color-mix(in srgb, var(--brand-accent), white 30%);
+  --color-teal-500: var(--brand-accent);
+  --color-teal-600: color-mix(in srgb, var(--brand-accent), black 8%);
+  --color-teal-700: color-mix(in srgb, var(--brand-accent), black 22%);
 }
 * { box-sizing: border-box; }
 html { min-width: 320px; scroll-behavior: smooth; }
