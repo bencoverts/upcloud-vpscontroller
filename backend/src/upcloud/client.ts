@@ -43,7 +43,8 @@ export class UpCloudClient implements UpCloudGateway {
 
   async listServers() {
     const results = [];
-    const limit = 1000;
+    // Keep batches conservative: some UpCloud API deployments reject larger limit values.
+    const limit = 100;
     for (let page = 0; page < 100; page += 1) {
       const payload = await this.request(`/server?limit=${limit}&offset=${page * limit}`);
       const servers = normalizeServerList(payload);

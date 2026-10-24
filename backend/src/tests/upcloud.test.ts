@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { TokenCipher } from '../lib/crypto.js';
 import { UpCloudClient } from '../upcloud/client.js';
 import { normalizeServerDetails, parseMetricValue } from '../upcloud/normalize.js';
-import { serverOne } from './helpers.js';
+import { serverOne, serverTwo } from './helpers.js';
 
 describe('UpCloud contract, retry, and token encryption', () => {
   it('uses AES-256-GCM with AAD and detects tampering', () => {
@@ -32,6 +32,42 @@ describe('UpCloud contract, retry, and token encryption', () => {
     } });
     expect(JSON.stringify(parsed.config)).not.toContain('do-not-store');
     expect(parsed.upcloudCreatedAt?.toISOString()).toBe('2023-11-14T22:13:20.000Z');
+  });
+
+  it('discovers every server with conservative pagination batches and correct offsets', async () => {
+    const firstPage = Array.from({ length: 100 }, (_, index) => ({
+      uuid: `00000000-0000-4000-8000-${index.toString(16).padStart(12, '0')}`,
+      title: `Server ${index}`,
+      hostname: `server-${index}.example.com`,
+      state: 'started',
+      zone: 'sg-sin1',
+      core_number: '2',
+      memory_amount: '4096',
+      plan: '2xCPU-4GB',
+    }));
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ servers: { server: firstPage } }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ servers: { server: [{
+        uuid: serverTwo.uuid,
+        title: serverTwo.title,
+        hostname: serverTwo.hostname,
+        state: serverTwo.state,
+        zone: serverTwo.zone,
+        core_number: String(serverTwo.coreNumber),
+        memory_amount: String(serverTwo.memoryMib),
+        plan: serverTwo.plan,
+      }] } }), { status: 200 }));
+    const client = new UpCloudClient('secret', { timeoutMs: 1000, retryBaseMs: 1, fetchImpl: fetchMock, baseUrl: 'https://unit.test/1.3' });
+
+    const servers = await client.listServers();
+
+    expect(servers).toHaveLength(101);
+    expect(servers.at(-1)?.uuid).toBe(serverTwo.uuid);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
+      'https://unit.test/1.3/server?limit=100&offset=0',
+      'https://unit.test/1.3/server?limit=100&offset=100',
+    ]);
   });
 
   it('retries GET on 429 with Retry-After but never retries power operations', async () => {
