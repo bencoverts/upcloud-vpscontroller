@@ -12,12 +12,12 @@ Simpan encryption key pada secret manager dengan backup terpisah. Tanpa key yang
 
 ## Format dan pengaman
 
-`backup.sh` memakai PostgreSQL custom format (`pg_dump -Fc`), permission `0600`, temporary file, verifikasi katalog `pg_restore --list`, atomic rename, dan SHA-256 sidecar. `restore.sh` mewajibkan dua persetujuan eksplisit, memeriksa archive/database, membuat pre-restore safety dump, memakai `--single-transaction --exit-on-error`, dan memeriksa tabel wajib setelah restore.
+`backup.mjs` memakai PostgreSQL custom format (`pg_dump -Fc`), permission `0600`, temporary file, verifikasi katalog `pg_restore --list`, publikasi file secara atomik tanpa menimpa backup lama, dan SHA-256 sidecar. `restore.mjs` mewajibkan dua persetujuan eksplisit, memeriksa archive/database, membuat pre-restore safety dump, memakai `--single-transaction --exit-on-error`, dan memeriksa tabel wajib setelah restore.
 
 ## Backup dengan Compose
 
 ```bash
-COMPOSE=1 ./scripts/backup.sh
+COMPOSE=1 node scripts/backup.mjs
 # Contoh output: backups/cerdasnet-20261024T080000Z.dump
 sha256sum -c backups/cerdasnet-20261024T080000Z.dump.sha256
 ```
@@ -28,11 +28,11 @@ sha256sum -c backups/cerdasnet-20261024T080000Z.dump.sha256
 
 ```bash
 export DATABASE_URL='postgresql://USER:PASSWORD@DB_HOST:5432/cerdasnet'
-./scripts/backup.sh
+node scripts/backup.mjs
 unset DATABASE_URL
 ```
 
-Diperlukan `pg_dump`, `pg_restore`, `pg_isready`, dan `psql` dengan versi yang kompatibel. Jangan menaruh connection string berisi password dalam command history atau log CI.
+Diperlukan Node.js 22 serta `pg_dump`, `pg_restore`, `pg_isready`, dan `psql` dengan versi yang kompatibel. Jangan menaruh connection string berisi password dalam command history atau log CI.
 
 ## Restore dengan Compose
 
@@ -45,7 +45,7 @@ Diperlukan `pg_dump`, `pg_restore`, `pg_isready`, dan `psql` dengan versi yang k
 ```bash
 docker compose stop app
 COMPOSE=1 APP_STOPPED=YES RESTORE_CONFIRM=YES \
-  ./scripts/restore.sh backups/cerdasnet-20261024T080000Z.dump
+  node scripts/restore.mjs backups/cerdasnet-20261024T080000Z.dump
 
 docker compose start app
 curl --fail http://127.0.0.1:3000/health/ready
@@ -73,4 +73,4 @@ Restore menggunakan `--clean --if-exists` dan bersifat destruktif terhadap schem
 
 ## Retensi dan automasi
 
-Backup terjadwal boleh memanggil `COMPOSE=1 /path/to/scripts/backup.sh` dari service/cron dengan working directory repository, environment minimal, dan permission ketat. Jangan log isi `.env`. Terapkan retention/offsite lifecycle setelah memverifikasi restore; jangan menghapus satu-satunya safety dump.
+Backup terjadwal boleh memanggil `COMPOSE=1 node /path/to/scripts/backup.mjs` dari service/cron dengan working directory repository, environment minimal, dan permission ketat. Jangan log isi `.env`. Terapkan retention/offsite lifecycle setelah memverifikasi restore; jangan menghapus satu-satunya safety dump.

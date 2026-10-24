@@ -19,7 +19,7 @@ Panel kontrol VPS UpCloud full-stack berbahasa Indonesia untuk banyak API token,
 
 - **Backend:** Node.js 22, Express 5, TypeScript, PostgreSQL, Zod, Argon2id, Pino.
 - **Frontend:** React 19, TypeScript, Vite, Tailwind CSS 4, TanStack Query, React Router, Recharts.
-- **Operasional:** Docker Compose, PostgreSQL 17, migration runner, custom-format `pg_dump` backup/restore, Vitest, Testing Library, Playwright (opt-in E2E).
+- **Operasional:** Node.js 22 untuk tooling, Docker Compose, PostgreSQL 17, migration runner, backup/restore Node.js dengan `pg_dump` custom-format, Vitest, Testing Library, Node test runner, dan Playwright (opt-in E2E).
 
 ## Quick start — Docker Compose
 
@@ -84,8 +84,8 @@ npm run lint
 npm test
 npm run build
 
-# Pemeriksaan sintaks tools operasional
-bash -n scripts/backup.sh scripts/restore.sh
+# Test tooling Node.js (juga termasuk dalam npm test)
+npm run test:scripts
 ```
 
 Test backend memakai migrasi dan PGlite disposable, session/HTTP/job logic nyata, dan hanya mengganti external UpCloud gateway dengan fake. Test frontend memeriksa client API, konfirmasi power anti-duplikasi, batas seleksi grup, dan empty monitoring states. PGlite bukan pengganti validasi pada PostgreSQL/Docker production.
@@ -96,12 +96,12 @@ Live UpCloud test bersifat opt-in dan read-only secara default. Power test membu
 
 ```bash
 # Dengan Compose; katalog dump diverifikasi sebelum file dipindahkan.
-COMPOSE=1 ./scripts/backup.sh
+COMPOSE=1 node scripts/backup.mjs
 
 # Restore: hentikan app dahulu. Script membuat safety dump sebelum restore.
 docker compose stop app
 COMPOSE=1 APP_STOPPED=YES RESTORE_CONFIRM=YES \
-  ./scripts/restore.sh backups/cerdasnet-YYYYMMDDTHHMMSSZ.dump
+  node scripts/restore.mjs backups/cerdasnet-YYYYMMDDTHHMMSSZ.dump
 docker compose start app
 ```
 

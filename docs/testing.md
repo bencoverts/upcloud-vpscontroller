@@ -9,7 +9,7 @@ npm test
 npm run build
 ```
 
-Backend integration tests menggunakan database PGlite disposable yang menjalankan SQL migrations, constraints, encryption, Argon2id/session flow, HTTP routes, sync workers, dan control verification. Hanya external UpCloud gateway/fetch boundary yang di-fake. Frontend tests menggunakan jsdom dan mocked panel API untuk memeriksa perilaku UI.
+Backend integration tests menggunakan database PGlite disposable yang menjalankan SQL migrations, constraints, encryption, Argon2id/session flow, HTTP routes, sync workers, dan control verification. Hanya external UpCloud gateway/fetch boundary yang di-fake. Frontend tests menggunakan jsdom dan mocked panel API untuk memeriksa perilaku UI. `npm run test:scripts` menjalankan Node.js built-in test runner untuk backup/restore dengan executable PostgreSQL palsu khusus test; test tersebut juga termasuk dalam `npm test`.
 
 Test ini tidak membuktikan kompatibilitas penuh PostgreSQL production, Docker restart behavior, nginx SSE, atau respons live UpCloud. Pisahkan klaim hasil test lokal dari validasi lingkungan tersebut.
 
@@ -60,8 +60,8 @@ docker compose up --build -d
 docker compose ps
 curl --fail http://127.0.0.1:3000/health/live
 curl --fail http://127.0.0.1:3000/health/ready
-bash -n scripts/backup.sh scripts/restore.sh
-COMPOSE=1 ./scripts/backup.sh
+npm run test:scripts
+COMPOSE=1 node scripts/backup.mjs
 ```
 
 Kemudian verifikasi migrasi idempotent saat restart, scheduler tidak membuat duplicate active jobs, SSE melewati reverse proxy, serta cookie Secure melalui HTTPS. Restore drill harus dilakukan pada database staging terpisah.
