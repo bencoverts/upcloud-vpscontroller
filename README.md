@@ -31,14 +31,14 @@ Prasyarat: Node.js `>=22.12` dan npm.
 ### 1. Install, konfigurasi, dan build
 
 ```bash
-npm ci
-npm --prefix backend ci
-npm --prefix frontend ci
+npm run setup
 
 cp .env.example .env
 chmod 600 .env
 openssl rand -hex 32
 ```
+
+`npm run setup` memasang dependency root, backend, dan frontend dengan `npm ci --include=dev`. Opsi tersebut penting karena TypeScript, `@types/node`, dan build tools lainnya adalah dev dependency; jangan memakai `--omit=dev` sebelum build, termasuk saat `NODE_ENV=production`.
 
 Edit `.env`:
 
