@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import type { BrandingService } from './service.js';
+import { BRANDING_DATA_URL_MAX_LENGTH } from './service.js';
 import { requestAudit } from '../http/helpers.js';
 import type { Database } from '../db/index.js';
 import { AppError } from '../lib/errors.js';
@@ -34,7 +35,7 @@ export function brandingRoutes(db: Database, branding: BrandingService): Router 
   router.put('/assets/:kind', async (req, res, next) => {
     try {
       const kind = z.enum(['logo', 'favicon']).parse(req.params.kind);
-      const { dataUrl } = z.object({ dataUrl: z.string().max(750_000) }).parse(req.body);
+      const { dataUrl } = z.object({ dataUrl: z.string().max(BRANDING_DATA_URL_MAX_LENGTH) }).parse(req.body);
       const result = await branding.setAsset(kind, dataUrl);
       await requestAudit(db, req, { action: 'branding.asset_upload', resourceType: 'system', outcome: 'success', details: { kind } });
       res.json({ data: result });

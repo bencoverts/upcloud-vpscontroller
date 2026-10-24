@@ -24,6 +24,26 @@ describe('branding assets and in-panel documentation', () => {
     } finally { await harness.close(); }
   });
 
+  it('accepts a logo up to 3 MiB and rejects larger files without replacing the stored asset', async () => {
+    const harness = await createHarness();
+    try {
+      const bytes = Buffer.alloc(3 * 1024 * 1024);
+      Buffer.from(onePixelPng, 'base64').copy(bytes);
+      const upload = await withCsrf(harness, harness.agent.put('/api/branding/assets/logo'))
+        .send({ dataUrl: `data:image/png;base64,${bytes.toString('base64')}` });
+      expect(upload.status).toBe(200);
+      expect(upload.body.data.logoUrl).toBe('/api/branding/assets/logo');
+
+      const oversized = await withCsrf(harness, harness.agent.put('/api/branding/assets/logo'))
+        .send({ dataUrl: `data:image/png;base64,${Buffer.concat([bytes, Buffer.alloc(1)]).toString('base64')}` });
+      expect(oversized.status).toBe(413);
+      expect(oversized.body.error).toMatchObject({ code: 'IMAGE_TOO_LARGE' });
+      expect(oversized.body.error.message).toContain('3 MB');
+      const stored = await harness.services.branding.asset('logo');
+      expect(stored?.data).toBe(bytes.toString('base64'));
+    } finally { await harness.close(); }
+  });
+
   it('requires authentication for docs and exposes the real deployment contract', async () => {
     const harness = await createHarness();
     try {

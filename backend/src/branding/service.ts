@@ -5,6 +5,10 @@ import { base64ToBytes } from '../lib/crypto.js';
 
 export type Branding = { siteName: string; siteTagline: string; accent: 'teal' | 'blue' | 'violet' | 'rose' | 'amber'; defaultTheme: 'system' | 'light' | 'dark' };
 export type BrandingAsset = { mime: string; data: string; updatedAt: string };
+export const LOGO_MAX_BYTES = 3 * 1024 * 1024;
+export const FAVICON_MAX_BYTES = 512 * 1024;
+// 3 MiB becomes 4,194,304 base64 characters; leave room for the MIME prefix.
+export const BRANDING_DATA_URL_MAX_LENGTH = 4_200_000;
 const defaults = (config: AppConfig): Branding => ({ siteName: config.siteName, siteTagline: config.siteTagline, accent: 'teal', defaultTheme: 'system' });
 
 export class BrandingService {
@@ -40,7 +44,9 @@ export class BrandingService {
     const allowed = kind === 'logo' ? ['image/png', 'image/jpeg', 'image/webp'] : ['image/png', 'image/x-icon'];
     if (!allowed.includes(mime)) throw new AppError(400, 'IMAGE_INVALID', `Format ${mime} tidak diizinkan untuk ${kind}.`);
     const bytes = base64ToBytes(match[2]!);
-    if (bytes.length < 8 || bytes.length > 512 * 1024) throw new AppError(413, 'IMAGE_TOO_LARGE', 'Ukuran gambar maksimal 512 KiB.');
+    const maxBytes = kind === 'logo' ? LOGO_MAX_BYTES : FAVICON_MAX_BYTES;
+    const maxLabel = kind === 'logo' ? '3 MB' : '512 KiB';
+    if (bytes.length < 8 || bytes.length > maxBytes) throw new AppError(413, 'IMAGE_TOO_LARGE', `Ukuran ${kind} maksimal ${maxLabel}.`);
     const signature = (values: number[]) => values.every((value, index) => bytes[index] === value);
     const valid = mime === 'image/png' ? signature([137, 80, 78, 71, 13, 10, 26, 10])
       : mime === 'image/jpeg' ? bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff

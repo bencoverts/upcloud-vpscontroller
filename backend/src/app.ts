@@ -39,6 +39,8 @@ export function createApplication(input: { config: AppConfig; db: Database; upcl
   app.set('trust proxy', config.trustProxy);
   app.use(helmet({ crossOriginEmbedderPolicy: false }));
   app.use(createHttpLogger(config, logger));
+  // Base64 adds roughly 33%; only branding assets may exceed the normal JSON limit.
+  app.use('/api/branding/assets', express.json({ limit: '5mb', strict: true }));
   app.use(express.json({ limit: '1mb', strict: true }));
   app.use(cookieParser());
 

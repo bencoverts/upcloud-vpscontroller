@@ -15,6 +15,7 @@ import type { WorkerEnv } from './runtime.js';
 import { openApiDocument } from '../../backend/src/docs/document.js';
 import { WorkerSmtpService } from './smtp.js';
 import { apiScopes } from '../../backend/src/api-keys/service.js';
+import { BRANDING_DATA_URL_MAX_LENGTH } from '../../backend/src/branding/service.js';
 
 type Variables = { auth: AuthContext };
 type C = Context<{ Variables: Variables }>;
@@ -60,15 +61,17 @@ export function createWorkerApi(services: ApplicationServices, env: WorkerEnv, o
 
   app.use('*', async (c, next) => {
     if (c.req.method !== 'GET' && c.req.path.startsWith('/api/')) {
+      const isBrandingAsset = c.req.path.startsWith('/api/branding/assets/');
+      const maxBodyBytes = isBrandingAsset ? 5 * 1024 * 1024 : 1024 * 1024;
       const length = Number(c.req.header('content-length') ?? 0);
-      if (length > 1024 * 1024) {
+      if (length > maxBodyBytes) {
         await c.req.raw.body?.cancel().catch(() => undefined);
         throw new AppError(413, 'BAD_REQUEST', 'Ukuran request melebihi batas.');
       }
       // Hono caches this body for route parsers. Reading it before an auth/CSRF
       // rejection also prevents workerd from draining a stream after responding.
       const rawBody = await c.req.text();
-      if (new TextEncoder().encode(rawBody).byteLength > 1024 * 1024) throw new AppError(413, 'BAD_REQUEST', 'Ukuran request melebihi batas.');
+      if (new TextEncoder().encode(rawBody).byteLength > maxBodyBytes) throw new AppError(413, 'BAD_REQUEST', 'Ukuran request melebihi batas.');
       if (c.req.header('sec-fetch-site') === 'cross-site') throw new AppError(403, 'CSRF_INVALID', 'Request lintas situs ditolak.');
       const origin = c.req.header('origin');
       if (origin) {
@@ -486,7 +489,7 @@ export function createWorkerApi(services: ApplicationServices, env: WorkerEnv, o
   });
   app.put('/api/branding/assets/:kind', async (c) => {
     admin(c); const kind = z.enum(['logo', 'favicon']).parse(c.req.param('kind'));
-    const input = await body(c, z.object({ dataUrl: z.string().max(750000) }));
+    const input = await body(c, z.object({ dataUrl: z.string().max(BRANDING_DATA_URL_MAX_LENGTH) }));
     const result = await services.branding.setAsset(kind, input.dataUrl);
     await audit(c, services, { action: 'branding.asset_upload', resourceType: 'system', outcome: 'success', details: { kind } });
     return data(c, result);
