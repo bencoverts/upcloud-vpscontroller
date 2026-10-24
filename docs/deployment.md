@@ -97,7 +97,8 @@ location = /api/events {
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header Connection "";
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
     proxy_buffering off;
     proxy_cache off;
     proxy_read_timeout 1h;
@@ -115,7 +116,7 @@ location / {
 }
 ```
 
-Jalankan validasi konfigurasi yang disediakan control panel/nginx sebelum reload. SSE memakai heartbeat dan header `X-Accel-Buffering: no`, tetapi reverse proxy tetap harus mematikan buffering pada `/api/events`. Tidak ada WebSocket atau arbitrary upstream URL.
+Jalankan validasi konfigurasi yang disediakan control panel/nginx sebelum reload. `/api/events` adalah endpoint WebSocket; reverse proxy harus meneruskan `Upgrade`/`Connection`, mematikan buffering/cache, dan mengizinkan koneksi panjang. Heartbeat menjaga koneksi dan frontend melakukan reconnect. Endpoint UpCloud tetap fixed-origin; panel bukan arbitrary upstream proxy.
 
 `TRUST_PROXY=1` sesuai satu reverse proxy lokal. Jika ada CDN tambahan, hitung trusted hops dengan benar; jangan memakai trust proxy berlebihan karena memengaruhi IP rate limit/audit.
 
@@ -171,6 +172,7 @@ Backup: `docker compose exec app node scripts/backup.mjs`. Salin archive dan sid
 - [ ] Login, CSRF, logout, ganti password, dan session revocation diuji.
 - [ ] Token nonproduksi divalidasi; server list sesuai izin token.
 - [ ] Dark/light, mobile navigation, filter, pagination, dan semua dialog diuji.
-- [ ] SSE live melalui reverse proxy dan reconnect setelah restart diuji.
-- [ ] Backup berhasil diverifikasi; restore drill staging berhasil.
+- [ ] Admin dan client memakai login yang sama; assignment, expiry, dan pencabutan kontrol client diuji tanpa mematikan VPS.
+- [ ] WebSocket live melalui reverse proxy dan reconnect setelah restart diuji; event client lain tidak bocor.
+- [ ] Backup UI/CLI berhasil diverifikasi; restore drill staging berhasil.
 - [ ] Live UpCloud/read-only dan power test hanya pada VPS nonproduksi yang diotorisasi.

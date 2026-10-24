@@ -1,0 +1,32 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cerdasnet-vps-control",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-24",
+  "assets": {
+    "directory": "../frontend/dist",
+    "not_found_handling": "single-page-application",
+    "binding": "ASSETS"
+  },
+  "r2_buckets": [
+    { "binding": "DATA", "bucket_name": "cerdasnet-panel-data" }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "PANEL", "class_name": "PanelDurableObject" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["PanelDurableObject"] }
+  ],
+  "vars": {
+    "APP_ORIGIN": "https://cerdasnet-vps-control.example.workers.dev",
+    "COOKIE_SECURE": "true",
+    "SESSION_TTL_HOURS": "12",
+    "SYNC_INTERVAL_SECONDS": "300",
+    "METRICS_REFRESH_SECONDS": "300",
+    "SERVER_POLL_SECONDS": "30",
+    "METRICS_RETENTION_DAYS": "30"
+  },
+  "observability": { "enabled": true }
+}

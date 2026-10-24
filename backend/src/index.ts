@@ -2,6 +2,7 @@ import { loadConfig } from './config.js';
 import { createDatabase } from './db/index.js';
 import { createApplication } from './app.js';
 import { SyncScheduler } from './sync/service.js';
+import { attachRealtimeServer } from './realtime.js';
 
 const config = loadConfig();
 const db = await createDatabase(config);
@@ -13,6 +14,7 @@ const server = app.listen(config.port, '0.0.0.0', () => {
 });
 server.requestTimeout = 120_000;
 server.headersTimeout = 125_000;
+const realtime = attachRealtimeServer(server, services);
 
 let shuttingDown = false;
 async function shutdown(signal: string): Promise<void> {
@@ -20,6 +22,7 @@ async function shutdown(signal: string): Promise<void> {
   shuttingDown = true;
   services.logger.info({ signal }, 'Shutting down');
   scheduler.stop();
+  realtime.close();
   server.close(async () => {
     await db.close();
     process.exit(0);

@@ -9,6 +9,7 @@ Backend memakai origin tetap `https://api.upcloud.com/1.3` dan Bearer authentica
 | Validasi akun | `GET /account` |
 | Discovery | `GET /server` dengan pagination |
 | Detail konfigurasi | `GET /server/{uuid}` |
+| Ubah title/hostname | `PUT /server/{uuid}` dengan envelope `server` |
 | CPU | `GET /server/{uuid}/stats/cpu/daily` |
 | Disk activity | `GET /server/{uuid}/stats/disk/bytes/daily` |
 | Network activity | `GET /server/{uuid}/stats/network/bytes/daily` |
@@ -17,6 +18,21 @@ Backend memakai origin tetap `https://api.upcloud.com/1.3` dan Bearer authentica
 | Soft restart | `POST /server/{uuid}/restart` |
 
 Response envelopes dinormalisasi dari `servers.server`, `server`, dan `stats.{period}.summary.variable`. Error mengenali `error.error_code` dan `error.error_message`; pesan disanitasi sebelum ditampilkan/disimpan.
+
+## Rename title dan hostname
+
+Request modification menggunakan envelope resmi:
+
+```json
+{
+  "server": {
+    "title": "Nama server baru",
+    "hostname": "server-baru.example.com"
+  }
+}
+```
+
+Backend memvalidasi UUID, title, dan format hostname, membatasi perubahan pada admin atau client dengan assignment yang masih berlaku, dan menolak submit identitas ganda yang masih berjalan. Cache lokal baru diperbarui dari respons upstream setelah UpCloud menerima perubahan. Error upstream tidak diubah menjadi sukses; audit hanya mencatat identitas yang diterima, bukan secret.
 
 ## Power request
 
@@ -45,9 +61,11 @@ Statistik yang tersedia berasal dari **daily summary** dengan nilai `current`, `
 | Disk read/write | Aktivitas block device; bukan filesystem usage |
 | Network in/out | Traffic interface dari statistics; bukan reachability |
 | IP, MAC, interface | Konfigurasi yang berhasil dibaca; bukan ping/port health |
-| RAM/swap usage | Tidak tersedia melalui API ini; agent OS diperlukan |
-| Filesystem used/free | Tidak tersedia; agent OS/filesystem exporter diperlukan |
-| OS uptime | Tidak tersedia; agent atau guest instrumentation diperlukan |
+| RAM/swap usage | Tidak tersedia melalui API ini; guest agent membaca `/proc/meminfo` bila dipasang |
+| Filesystem used/free | Bukan kapasitas/throughput block storage; guest agent membaca `df` bila dipasang |
+| OS uptime | Bukan power state; guest agent membaca `/proc/uptime` bila dipasang |
+
+Sampel UpCloud dan guest agent disimpan sebagai record berbeda, lalu nilai aktual terakhir per field digabung dengan timestamp sumber. Agent hanya dapat mengirim ke UUID yang sesuai dengan hash token-nya. Lihat [guest-agent.md](guest-agent.md).
 
 History hanya terbentuk dari sampel panel. Tidak ada backfill/interpolasi untuk waktu sebelum panel berjalan. Jika lebih dari 600 titik perlu ditampilkan, satu sampel aktual terakhir per time bucket dipilih; tidak ada rata-rata atau nilai baru yang direkayasa. Interval default 300 detik mengurangi request sia-sia karena upstream berupa daily summary.
 

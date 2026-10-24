@@ -17,7 +17,7 @@ describe('local JSON database', () => {
       expect(await readFile(harness.db.filePath, 'utf8')).toBe(before);
       expect(await harness.db.read((data) => data.app_settings)).toHaveLength(4);
       const stored = JSON.parse(before);
-      expect(stored.schemaVersion).toBe(1);
+      expect(stored.schemaVersion).toBe(2);
       expect(stored.users).toHaveLength(1);
       expect(stored.sessions).toHaveLength(1);
     } finally { await harness.close(); }

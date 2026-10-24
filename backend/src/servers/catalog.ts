@@ -2,6 +2,8 @@ import type { Database } from '../db/index.js';
 import { activeJobStatuses } from '../db/types.js';
 import type { DatabaseData, ServerRecord } from '../db/types.js';
 import type { UpCloudServerDetails, UpCloudServerSummary } from '../upcloud/types.js';
+import type { PanelUser } from '../auth/service.js';
+import { accessExpiresAt, hasServerAccess, isAdmin } from '../auth/access.js';
 
 export type ServerQuery = {
   search?: string;
@@ -138,7 +140,7 @@ function relationsFor(data: DatabaseData, uuids: string[]) {
 
 type Relations = ReturnType<typeof relationsFor>;
 
-function toServerDto(row: ServerRow, relations: Relations) {
+function toServerDto(row: ServerRow, relations: Relations, data: DatabaseData, actor?: PanelUser) {
   const tokens = relations.tokens.filter((item) => item.server_uuid === row.uuid).map((item) => ({
     id: item.id, name: item.name, enabled: item.enabled,
     connectionStatus: item.connection_status, validationStatus: item.validation_status,
@@ -157,14 +159,15 @@ function toServerDto(row: ServerRow, relations: Relations) {
     detailsSyncedAt: row.details_synced_at, lastSyncAttemptAt: row.last_sync_attempt_at,
     publicIps, privateIps, networkConfigurationStatus: networks.length > 0 ? 'available' : 'unavailable',
     activeJob: activeJob ? { id: activeJob.id, type: activeJob.job_type, status: activeJob.status } : null,
-    tokens,
-    groups: tokens.filter((token) => token.selectedSlot !== null),
+    accessExpiresAt: actor ? accessExpiresAt(data, actor, row.uuid) ?? null : null,
+    tokens: !actor || isAdmin(actor) ? tokens : [],
+    groups: !actor || isAdmin(actor) ? tokens.filter((token) => token.selectedSlot !== null) : [],
   };
 }
 
-function activeServerRows(data: DatabaseData): ServerRow[] {
+function activeServerRows(data: DatabaseData, actor?: PanelUser): ServerRow[] {
   const active = new Set(data.token_server_memberships.filter((row) => row.active).map((row) => row.server_uuid));
-  return data.servers.filter((row) => active.has(row.uuid)).map((row) => ({
+  return data.servers.filter((row) => active.has(row.uuid) && (!actor || hasServerAccess(data, actor, row.uuid))).map((row) => ({
     ...row,
     storage_gib: data.server_storage.filter((storage) => storage.server_uuid === row.uuid)
       .reduce((total, storage) => total + Number(storage.size_gib), 0),
@@ -186,10 +189,10 @@ function compareServers(left: ServerRow, right: ServerRow, input: ServerQuery): 
   return (a < b ? -1 : 1) * direction;
 }
 
-export async function listServers(db: Database, input: ServerQuery) {
+export async function listServers(db: Database, input: ServerQuery, actor?: PanelUser) {
   return db.read((data) => {
     const search = input.search?.toLowerCase();
-    const allRows = activeServerRows(data);
+    const allRows = activeServerRows(data, actor);
     const rows = allRows.filter((row) => {
       if (search) {
         const addresses = data.server_networks.filter((network) => network.server_uuid === row.uuid)
@@ -211,20 +214,20 @@ export async function listServers(db: Database, input: ServerQuery) {
     const relations = relationsFor(data, pageRows.map((row) => row.uuid));
     const zones = [...new Set(allRows.flatMap((row) => row.zone ? [row.zone] : []))].sort();
     return {
-      items: pageRows.map((row) => toServerDto(row, relations)),
+      items: pageRows.map((row) => toServerDto(row, relations, data, actor)),
       pagination: { page: input.page, limit: input.limit, total, pages: Math.max(1, Math.ceil(total / input.limit)) },
       filters: { zones },
     };
   });
 }
 
-export async function getServer(db: Database, uuid: string) {
+export async function getServer(db: Database, uuid: string, actor?: PanelUser) {
   return db.read((data) => {
-    const row = activeServerRows(data).find((item) => item.uuid === uuid);
+    const row = activeServerRows(data, actor).find((item) => item.uuid === uuid);
     if (!row) return null;
     const relations = relationsFor(data, [uuid]);
     return {
-      ...toServerDto(row, relations),
+      ...toServerDto(row, relations, data, actor),
       config: row.config,
       storages: relations.storages.map((storage) => ({
         uuid: storage.storage_uuid, title: storage.title, sizeGib: Number(storage.size_gib), tier: storage.tier,
@@ -241,9 +244,9 @@ export async function getServer(db: Database, uuid: string) {
   });
 }
 
-export async function dashboardSummary(db: Database) {
+export async function dashboardSummary(db: Database, actor?: PanelUser) {
   return db.read((data) => {
-    const rows = activeServerRows(data);
+    const rows = activeServerRows(data, actor);
     const timestamps = rows.flatMap((row) => row.last_synced_at ? [row.last_synced_at] : []).sort();
     return {
       totalServers: rows.length,

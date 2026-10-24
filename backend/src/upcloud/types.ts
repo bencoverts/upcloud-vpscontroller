@@ -68,6 +68,7 @@ export interface UpCloudGateway {
   getAccount(): Promise<{ username: string | null }>;
   listServers(): Promise<UpCloudServerSummary[]>;
   getServer(uuid: string): Promise<UpCloudServerDetails>;
+  updateServer(uuid: string, identity: { title: string; hostname: string }): Promise<UpCloudServerDetails>;
   getCpuStats(uuid: string, period?: UpCloudStatsSummary['period']): Promise<UpCloudStatsSummary>;
   getDiskStats(uuid: string, period?: UpCloudStatsSummary['period']): Promise<UpCloudStatsSummary>;
   getNetworkStats(uuid: string, period?: UpCloudStatsSummary['period']): Promise<UpCloudStatsSummary>;

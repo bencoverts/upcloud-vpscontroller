@@ -36,10 +36,8 @@ export function requireCsrf(req: Request, _res: Response, next: NextFunction) {
   return next();
 }
 
-export function requireAdminForMutations(req: Request, _res: Response, next: NextFunction) {
-  if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.auth?.user.role !== 'admin') {
-    return next(new AppError(403, 'FORBIDDEN', 'Hanya admin yang dapat melakukan perubahan.'));
-  }
+export function requireAdmin(req: Request, _res: Response, next: NextFunction) {
+  if (req.auth?.user.role !== 'admin') return next(new AppError(403, 'FORBIDDEN', 'Hanya admin yang dapat mengakses resource ini.'));
   return next();
 }
 

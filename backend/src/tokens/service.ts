@@ -1,16 +1,16 @@
-import { randomUUID } from 'node:crypto';
+import { randomId } from '../lib/crypto.js';
 import type { Database } from '../db/index.js';
 import { activeJobStatuses } from '../db/types.js';
 import type { ApiTokenRecord, DatabaseData } from '../db/types.js';
 import { AppError } from '../lib/errors.js';
-import { TokenCipher, maskUpCloudToken } from '../lib/crypto.js';
+import { base64ToBytes, bytesToBase64, TokenCipher, maskUpCloudToken } from '../lib/crypto.js';
 import type { UpCloudGatewayFactory } from '../upcloud/factory.js';
 import { UpCloudApiError } from '../upcloud/client.js';
 import type { UpCloudServerSummary } from '../upcloud/types.js';
 import { deactivateMissingMemberships, persistServer, upsertMembership } from '../servers/catalog.js';
 
 export type TokenRecord = Omit<ApiTokenRecord, 'ciphertext' | 'iv' | 'auth_tag'> & {
-  ciphertext: Buffer; iv: Buffer; auth_tag: Buffer;
+  ciphertext: Uint8Array; iv: Uint8Array; auth_tag: Uint8Array;
 };
 
 export type TokenInput = {
@@ -22,8 +22,8 @@ export type TokenInput = {
 
 function hydrate(record: ApiTokenRecord): TokenRecord {
   return {
-    ...record, ciphertext: Buffer.from(record.ciphertext, 'base64'),
-    iv: Buffer.from(record.iv, 'base64'), auth_tag: Buffer.from(record.auth_tag, 'base64'),
+    ...record, ciphertext: base64ToBytes(record.ciphertext),
+    iv: base64ToBytes(record.iv), auth_tag: base64ToBytes(record.auth_tag),
   };
 }
 
@@ -48,7 +48,7 @@ export class TokenService {
     }
     const validated = await this.validate(input.token);
     this.assertSelection(input.selectedServerUuids, validated.servers);
-    const id = randomUUID();
+    const id = randomId();
     const encrypted = this.cipher.encrypt(input.token, id);
     await this.db.withTransaction(({ data }) => {
       if (data.api_tokens.some((row) => row.fingerprint === fingerprint)) {
@@ -56,8 +56,8 @@ export class TokenService {
       }
       const now = new Date().toISOString();
       data.api_tokens.push({
-        id, name: input.name, ciphertext: encrypted.ciphertext.toString('base64'),
-        iv: encrypted.iv.toString('base64'), auth_tag: encrypted.authTag.toString('base64'),
+        id, name: input.name, ciphertext: bytesToBase64(encrypted.ciphertext),
+        iv: bytesToBase64(encrypted.iv), auth_tag: bytesToBase64(encrypted.authTag),
         key_version: 1, fingerprint, masked_token: maskUpCloudToken(input.token), enabled: true,
         validation_status: 'valid', connection_status: 'online', expires_at: input.expiresAt ?? null,
         expires_at_verified: false, last_error_code: null, last_error_message: null,
@@ -88,8 +88,8 @@ export class TokenService {
       }
       const now = new Date().toISOString();
       Object.assign(token, {
-        ciphertext: encrypted.ciphertext.toString('base64'), iv: encrypted.iv.toString('base64'),
-        auth_tag: encrypted.authTag.toString('base64'), key_version: 1, fingerprint,
+        ciphertext: bytesToBase64(encrypted.ciphertext), iv: bytesToBase64(encrypted.iv),
+        auth_tag: bytesToBase64(encrypted.authTag), key_version: 1, fingerprint,
         masked_token: maskUpCloudToken(input.token), expires_at: input.expiresAt ?? null,
         expires_at_verified: false, validation_status: 'valid' as const, connection_status: 'online' as const,
         last_error_code: null, last_error_message: null, last_validated_at: now,
