@@ -34,10 +34,10 @@ openssl rand -hex 32
 
 ## 3. Install, build, dan bootstrap
 
+`npm run setup` memasang dependency root, backend, dan frontend dengan `npm ci --include=dev`. Dev dependency seperti TypeScript dan `@types/node` wajib tersedia saat build; jangan memakai `--omit=dev` sebelum build meskipun `NODE_ENV=production`.
+
 ```bash
-npm ci
-npm --prefix backend ci
-npm --prefix frontend ci
+npm run setup
 npm run build
 
 read -rp "Admin username: " ADMIN_USERNAME
@@ -125,9 +125,7 @@ Origin guard menerima `APP_ORIGIN` atau origin yang sama dengan `Host` dan proto
 
 ```bash
 node scripts/backup.mjs
-npm ci
-npm --prefix backend ci
-npm --prefix frontend ci
+npm run setup
 npm run build
 pm2 restart cerdasnet-vps-control
 curl --fail http://127.0.0.1:3000/health/ready
